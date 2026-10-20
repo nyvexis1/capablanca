@@ -598,7 +598,10 @@ void search_start(const Position& pos, const std::vector<Key>& history, const Se
 }
 
 // Quiescence score of a position from the side to move's view (used by the tuner's quiet filter).
+// Clears the TT first: its key ignores the halfmove clock, which the evaluation depends on,
+// so cached entries from another sample could otherwise leak into this one.
 int qsearch_score(const Position& pos) {
+    std::fill(TT.begin(), TT.end(), TTEntry{});
     stopFlag = false;
     limits = SearchLimits{};
     rootDepth = 0;

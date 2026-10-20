@@ -27,12 +27,16 @@ def cp(score, color):
 
 
 def move_loss(engine, board, move, depth):
-    """centipawn loss of `move` versus Stockfish's best at `depth` (from mover's side)."""
-    best = engine.analyse(board, chess.engine.Limit(depth=depth))
+    """centipawn loss of `move` versus Stockfish's best at `depth` (from mover's side).
+
+    Every search starts from a cleared hash (a new `game` makes python-chess send ucinewgame),
+    so a shallow search can't borrow knowledge from an earlier deep one.
+    """
+    best = engine.analyse(board, chess.engine.Limit(depth=depth), game=object())
     best_cp = cp(best["score"], board.turn)
     if best.get("pv") and best["pv"][0] == move:
         return 0, best_cp
-    played = engine.analyse(board, chess.engine.Limit(depth=depth), root_moves=[move])
+    played = engine.analyse(board, chess.engine.Limit(depth=depth), root_moves=[move], game=object())
     played_cp = cp(played["score"], board.turn)
     return max(0, best_cp - played_cp), played_cp
 
