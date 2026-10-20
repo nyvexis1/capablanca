@@ -65,6 +65,12 @@ void set_option(std::istringstream& is) {
     else if (name == "defense") Style.defense = std::stoi(value);
     else if (name == "contempt") Style.contempt = std::stoi(value);
     else if (name == "sacrificevision") Style.sacrificeVision = std::stoi(value);
+    else if (name == "usennue") UseNNUE = value == "true";
+    else if (name == "evalfile") {
+        std::string file = value, rest;
+        while (is >> rest) file += " " + rest;
+        sync_out(nnue_load(file) ? "info string loaded network " + file : "info string could not load network " + file);
+    }
 }
 
 } // namespace
@@ -74,6 +80,11 @@ int main(int argc, char** argv) {
     init_bitboards();
     Zobrist::init();
     init_eval();
+    // Default network next to the executable, if present
+    {
+        std::string exe = argv[0], dir = exe.substr(0, exe.find_last_of("/\\") + 1);
+        if (!nnue_load(dir + "capablanca.nnue")) nnue_load("capablanca.nnue");
+    }
     tt_resize(64);
     new_game();
     pos.set_fen(StartFen);
@@ -108,6 +119,8 @@ int main(int argc, char** argv) {
                       << "option name Defense type spin default " << Style.defense << " min 0 max 300\n"
                       << "option name Contempt type spin default " << Style.contempt << " min -100 max 100\n"
                       << "option name SacrificeVision type spin default " << Style.sacrificeVision << " min 0 max 31\n"
+                      << "option name UseNNUE type check default true\n"
+                      << "option name EvalFile type string default capablanca.nnue\n"
                       << "uciok" << std::endl;
         } else if (cmd == "isready") sync_out("readyok");
         else if (cmd == "ucinewgame") { search_stop(); new_game(); }
@@ -117,7 +130,10 @@ int main(int argc, char** argv) {
         else if (cmd == "stop") search_stop();
         else if (cmd == "quit") break;
         else if (cmd == "d") std::cout << pos.fen() << std::endl;
-        else if (cmd == "eval") eval_trace(pos);
+        else if (cmd == "eval") {
+            eval_trace(pos);
+            if (nnue_ready()) std::cout << "nnue (side to move) " << nnue_evaluate(pos) << std::endl;
+        }
         else if (cmd == "bench") { int d = 11; is >> d; bench(d); }
     }
     search_stop();

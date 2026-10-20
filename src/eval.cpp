@@ -330,7 +330,15 @@ static int evaluate_impl(const Position& pos, bool trace) {
     return pos.stm == WHITE ? score : -score;
 }
 
-int evaluate(const Position& pos) { return evaluate_impl(pos, false); }
+bool UseNNUE = true;
+
+int evaluate(const Position& pos) {
+    if (UseNNUE && nnue_ready()) {
+        int score = nnue_evaluate(pos);
+        return score * (200 - pos.halfmove) / 200;
+    }
+    return evaluate_impl(pos, false);
+}
 
 std::vector<TuneParam> tune_params() {
     auto sArr = [](const char* n, S* p, int count) { return TuneParam{n, &p->mg, count * 2, true}; };

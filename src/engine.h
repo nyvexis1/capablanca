@@ -43,6 +43,12 @@ std::vector<TuneParam> tune_params();
 void tune(const std::string& dataFile, int threads, int passes);
 int qsearch_score(const Position& pos);
 
+// NNUE (src/nnue.cpp). evaluate() uses it when a net is loaded and UseNNUE is set.
+bool nnue_load(const std::string& path);
+bool nnue_ready();
+int nnue_evaluate(const Position& pos);
+extern bool UseNNUE;
+
 struct SearchLimits {
     int time[2] = {-1, -1};
     int inc[2] = {0, 0};

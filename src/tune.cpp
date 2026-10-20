@@ -99,6 +99,7 @@ void tune(const std::string& dataFile, int threads, int passes) {
     // Tune a symmetric evaluation: style multipliers are applied on top afterwards.
     StyleConfig saved = Style;
     Style.aggression = Style.defense = 100;
+    UseNNUE = false; // the tuner fits the hand-written evaluation
 
     tt_resize(1); // the quiet filter clears the TT per sample; keep that cheap
 
