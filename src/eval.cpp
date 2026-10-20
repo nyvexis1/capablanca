@@ -35,6 +35,8 @@ int MobilityBase[6] = {0, 4, 6, 7, 14, 0};
 int AttackWeight[6] = {0, 25, 20, 30, 60, 0};
 
 S PassedBonus[8] = {{0, 0}, {5, 10}, {8, 15}, {15, 28}, {30, 55}, {55, 95}, {90, 150}, {0, 0}};
+// Passed-pawn conversion: safe next step and free path scale with advancement; rook behind is flat
+S PassedSafeStop = {2, 6}, PassedFreePath = {4, 12}, RookBehindPassed = {8, 20};
 S Doubled = {10, 20}, Isolated = {10, 12}, Phalanx = {6, 6}, Supported = {7, 5};
 S BishopPair = {30, 50};
 S RookOpen = {25, 10}, RookSemiOpen = {12, 8};
@@ -70,7 +72,7 @@ inline void add_attacks(EvalInfo& ei, Color c, int pt, Bitboard att) {
     ei.attackedBy[c][pt] |= att;
 }
 
-S eval_pawns(const Position& pos, Color c) {
+S eval_pawns(const Position& pos, const EvalInfo& ei, Color c) {
     S s;
     Color them = ~c;
     Bitboard own = pos.pieces[c][PAWN], enemy = pos.pieces[them][PAWN];
@@ -97,6 +99,17 @@ S eval_pawns(const Position& pos, Color c) {
             int ownK = pos.king_sq(c), theirK = pos.king_sq(them);
             int w = std::max(0, rr - 2);
             s += S(0, (Distance[theirK][stop] * 5 - Distance[ownK][stop] * 2) * w);
+            // Can it actually run? Squares the opponent controls and we don't are blocked.
+            Bitboard path = file_bb(f) & front;
+            Bitboard unsafe = pos.all | (ei.attacked[them] & ~ei.attacked[c]);
+            if (!(unsafe & bb(stop))) s += PassedSafeStop * w;
+            if (!(unsafe & path)) s += PassedFreePath * w;
+            // A rook behind the passer pushes it home
+            Bitboard behind = file_bb(f) & ~front & ~bb(sq);
+            if (pos.pieces[c][ROOK] & behind) {
+                int r = c == WHITE ? msb(pos.pieces[c][ROOK] & behind) : lsb(pos.pieces[c][ROOK] & behind);
+                if (!(BetweenBB[r][sq] & pos.all)) s += RookBehindPassed;
+            }
         }
     }
     return s;
@@ -280,7 +293,7 @@ static int evaluate_impl(const Position& pos, bool trace) {
     int phase = 0;
     S side[2];
     for (Color c : {WHITE, BLACK}) side[c] = eval_side(pos, ei, c, phase);
-    S pawns[2] = {eval_pawns(pos, WHITE), eval_pawns(pos, BLACK)};
+    S pawns[2] = {eval_pawns(pos, ei, WHITE), eval_pawns(pos, ei, BLACK)};
     S king[2] = {king_danger(pos, ei, WHITE), king_danger(pos, ei, BLACK)};
     S threat[2] = {threats(pos, ei, WHITE), threats(pos, ei, BLACK)};
 
@@ -327,6 +340,8 @@ std::vector<TuneParam> tune_params() {
         sArr("MobilityWeight", MobilityWeight, 6),
         TuneParam{"AttackWeight", AttackWeight, 6, false},
         sArr("PassedBonus", PassedBonus, 8),
+        sArr("PassedSafeStop", &PassedSafeStop, 1), sArr("PassedFreePath", &PassedFreePath, 1),
+        sArr("RookBehindPassed", &RookBehindPassed, 1),
         sArr("Doubled", &Doubled, 1), sArr("Isolated", &Isolated, 1), sArr("Phalanx", &Phalanx, 1),
         sArr("Supported", &Supported, 1), sArr("BishopPair", &BishopPair, 1), sArr("RookOpen", &RookOpen, 1),
         sArr("RookSemiOpen", &RookSemiOpen, 1), sArr("KnightOutpost", &KnightOutpost, 1),

@@ -140,6 +140,24 @@ bool attacks_king_zone(const Position& pos, Move m) {
     return attacks_by_type(pt, to, occ) & KingAttacks[ek] & ~pos.occ[pos.stm];
 }
 
+// Is the side to move really attacking the enemy king? Sacrifice vision only switches on here:
+// queen on the board, at least two pieces already hitting the king's neighbourhood, and either
+// a broken pawn shield or three attackers. Most positions are not attacks, and treating every
+// move near the king as one costs far more search than it finds.
+bool real_attack(const Position& pos) {
+    Color us = pos.stm, them = ~us;
+    if (!pos.pieces[us][QUEEN]) return false;
+    int ek = pos.king_sq(them);
+    Bitboard zone = KingAttacks[ek] | bb(ek);
+    int attackers = 0;
+    for (int pt = KNIGHT; pt <= QUEEN; pt++)
+        for (Bitboard b = pos.pieces[us][pt]; b; b &= b - 1)
+            if (attacks_by_type(pt, lsb(b), pos.all) & zone) attackers++;
+    if (attackers < 2) return false;
+    Bitboard shield = pawn_push(them, KingAttacks[ek] | bb(ek)) & pos.pieces[them][PAWN];
+    return attackers >= 3 || popcount(shield) <= 1;
+}
+
 int16_t* cont_entry(int ply, int back) {
     if (ply < back) return nullptr;
     const StackEntry& e = stack[ply - back];
@@ -164,7 +182,7 @@ void update_cont(int ply, int pc, int to, int bonus) {
         }
 }
 
-void score_moves(const Position& pos, MoveList& list, Move ttMove, int ply) {
+void score_moves(const Position& pos, MoveList& list, Move ttMove, int ply, bool attack = false) {
     Move counter = MOVE_NONE;
     if (ply > 0 && stack[ply - 1].move != MOVE_NONE && stack[ply - 1].move != NULL_MOVE)
         counter = counterMoves[stack[ply - 1].piece][to_sq(stack[ply - 1].move)];
@@ -179,14 +197,14 @@ void score_moves(const Position& pos, MoveList& list, Move ttMove, int ply) {
             int attacker = type_of(pos.board[from_sq(m)]);
             int mvv = v * 10 - MvvValue[attacker] / 10;
             if (pos.see_ge(m, 0)) sc = 2'000'000 + mvv;
-            else if ((Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc = 850'000 + mvv; // attacking sacrifice
+            else if (attack && (Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc = 850'000 + mvv; // attacking sacrifice
             else sc = -1'000'000 + mvv;
         } else if (m == stack[ply].killers[0]) sc = 900'000;
         else if (m == stack[ply].killers[1]) sc = 890'000;
         else if (m == counter) sc = 880'000;
         else {
             sc = quiet_history(pos, m, ply);
-            if ((Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc += 1500;
+            if (attack && (Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc += 1500;
         }
     }
 }
@@ -200,7 +218,7 @@ Move pick_move(MoveList& list, int idx) {
     return list.moves[idx];
 }
 
-int qsearch(const Position& pos, int alpha, int beta, int ply) {
+int qsearch(const Position& pos, int alpha, int beta, int ply, int qply = 0) {
     nodes++;
     check_time();
     if (stopFlag) return 0;
@@ -234,17 +252,21 @@ int qsearch(const Position& pos, int alpha, int beta, int ply) {
     int oldAlpha = alpha;
     for (int i = 0; i < list.size; i++) {
         Move m = pick_move(list, i);
+        // A losing capture may survive only at the first quiescence ply and only if it gives
+        // check: forcing sacrifices then get one more look instead of vanishing at the horizon.
+        bool losing = !inCheck && !pos.see_ge(m, 0);
+        if (losing && qply > 0) continue;
         if (!inCheck) {
-            if (!pos.see_ge(m, 0)) continue;
             int victim = pos.captured_type(m);
             int gain = (victim == NO_PIECE_TYPE ? 0 : MvvValue[victim]) + (is_promotion(m) ? 850 : 0);
             if (standPat + gain + 200 <= alpha) continue; // delta pruning
         }
         Position child = pos;
         if (!child.make(m)) continue;
+        if (losing && !child.in_check()) continue;
         legal++;
         keyStack.push_back(pos.key);
-        int score = -qsearch(child, -beta, -alpha, ply + 1);
+        int score = -qsearch(child, -beta, -alpha, ply + 1, qply + 1);
         keyStack.pop_back();
         if (stopFlag) return 0;
         if (score > bestScore) {
@@ -343,7 +365,8 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
 
     MoveList list;
     generate_moves(pos, list, false);
-    score_moves(pos, list, ttMove, ply);
+    bool attack = Style.sacrificeVision && !inCheck && real_attack(pos);
+    score_moves(pos, list, ttMove, ply, attack);
 
     int bestScore = -INF, moveCount = 0;
     Move bestMove = MOVE_NONE;
@@ -360,7 +383,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
 
         bool quiet = !is_tactical(m);
         bool givesCheck = child.in_check();
-        bool kingStrike = Style.sacrificeVision && (givesCheck || attacks_king_zone(pos, m));
+        bool kingStrike = attack && (givesCheck || attacks_king_zone(pos, m));
         bool svPrune = Style.sacrificeVision & SV_PRUNE, svLmr = Style.sacrificeVision & SV_LMR;
         int see = (quiet && !kingStrike && !givesCheck) ? 0 : pos.see(m);
         bool attackingSac = kingStrike && see < -50;
