@@ -10,7 +10,7 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 $FC -engine cmd=$A name=A $OPTA -engine cmd=$B name=B $OPTB \
     -each tc=$TC option.Hash=16 \
     -openings file=tools/books/8moves_v3.pgn format=pgn order=random \
-    -rounds $((GAMES / 2)) -games 2 -repeat -concurrency 14 -recover \
+    -rounds $((GAMES / 2)) -games 2 -repeat -concurrency 12 -recover \
     -sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 \
     -pgnout file=matches/selfplay_$STAMP.pgn 2>&1 | grep -E "^Elo|^Games|^LLR|SPRT" | tail -4
 rm -f config.json

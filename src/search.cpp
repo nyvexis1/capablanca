@@ -97,6 +97,18 @@ void check_time() {
     if (hardLimit > 0 && elapsed_ms() >= hardLimit) stopFlag = true;
 }
 
+int draw_score(const Position& pos);
+
+// At halfmove >= 100 the game is drawn unless the side to move is checkmated.
+int fifty_move_score(const Position& pos, int ply) {
+    if (pos.in_check()) {
+        MoveList legal;
+        generate_legal(pos, legal);
+        if (legal.size == 0) return -MATE + ply;
+    }
+    return draw_score(pos);
+}
+
 int draw_score(const Position& pos) {
     // Contempt: a draw is a bit of a disappointment for Capablanca.
     return pos.stm == EngineColor ? -Style.contempt : Style.contempt;
@@ -195,6 +207,7 @@ int qsearch(const Position& pos, int alpha, int beta, int ply) {
     if (ply > selDepth) selDepth = ply;
     if (ply >= MAX_PLY) return evaluate(pos);
     if (is_repetition(pos) || insufficient_material(pos)) return draw_score(pos);
+    if (pos.halfmove >= 100) return fifty_move_score(pos, ply);
 
     bool hit;
     TTEntry* tte = tt_probe(pos.key, hit);
@@ -263,7 +276,8 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
     Move excluded = stack[ply].excluded;
 
     if (!root) {
-        if (pos.halfmove >= 100 || is_repetition(pos) || insufficient_material(pos)) return draw_score(pos);
+        if (is_repetition(pos) || insufficient_material(pos)) return draw_score(pos);
+        if (pos.halfmove >= 100) return fifty_move_score(pos, ply);
         if (ply >= MAX_PLY) return evaluate(pos);
         alpha = std::max(alpha, -MATE + ply);
         beta = std::min(beta, MATE - ply - 1);
@@ -348,7 +362,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         bool givesCheck = child.in_check();
         bool kingStrike = Style.sacrificeVision && (givesCheck || attacks_king_zone(pos, m));
         bool svPrune = Style.sacrificeVision & SV_PRUNE, svLmr = Style.sacrificeVision & SV_LMR;
-        int see = (quiet && !kingStrike) ? 0 : pos.see(m);
+        int see = (quiet && !kingStrike && !givesCheck) ? 0 : pos.see(m);
         bool attackingSac = kingStrike && see < -50;
 
         // ---- Pruning (never for attacking sacrifices: that is where brilliancies hide) ----
@@ -410,6 +424,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         keyStack.pop_back();
         if (stopFlag) return 0;
 
+        if (quiet && quietCount < 64) quiets[quietCount++] = m;
         if (score > bestScore) {
             bestScore = score;
             if (score > alpha) {
@@ -422,7 +437,6 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
                 if (score >= beta) break;
             }
         }
-        if (quiet && quietCount < 64) quiets[quietCount++] = m;
     }
 
     if (moveCount == 0) {
@@ -573,6 +587,10 @@ void search_start(const Position& pos, const std::vector<Key>& history, const Se
     stopFlag = false;
     limits = lim;
     keyStack = history;
+    static int lastPerspective = -1;
+    int perspective = pos.stm | (Style.aggression << 1) | (Style.defense << 10) | (Style.contempt + 128) << 19;
+    if (perspective != lastPerspective) std::fill(TT.begin(), TT.end(), TTEntry{});
+    lastPerspective = perspective;
     EngineColor = pos.stm;
     startTime = std::chrono::steady_clock::now();
     compute_time(pos.stm);

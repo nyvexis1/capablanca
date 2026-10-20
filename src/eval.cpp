@@ -263,7 +263,7 @@ void init_eval() {
 bool insufficient_material(const Position& pos) {
     if (pos.pcs(PAWN) | pos.pcs(ROOK) | pos.pcs(QUEEN)) return false;
     int w = popcount(pos.occ[WHITE]) - 1, b = popcount(pos.occ[BLACK]) - 1;
-    return w <= 1 && b <= 1;
+    return (w == 0 && b <= 1) || (b == 0 && w <= 1);
 }
 
 static int evaluate_impl(const Position& pos, bool trace) {
@@ -272,7 +272,9 @@ static int evaluate_impl(const Position& pos, bool trace) {
         int k = pos.king_sq(c);
         ei.kingZone[c] = KingAttacks[k] | bb(k);
         ei.kingZone[c] |= pawn_push(c, ei.kingZone[c]);
-        add_attacks(ei, c, PAWN, pawn_attacks_bb(c, pos.pieces[c][PAWN]));
+        Bitboard pushed = pawn_push(c, pos.pieces[c][PAWN]);
+        add_attacks(ei, c, PAWN, shift_east(pushed));
+        add_attacks(ei, c, PAWN, shift_west(pushed));
         add_attacks(ei, c, KING, KingAttacks[k]);
     }
     int phase = 0;
