@@ -4,7 +4,7 @@ One-time setup (your Modal account):
   pip install modal
   modal setup                                   # opens the browser to log in
 
-Each training run:
+Each training run (from Git Bash, first `export MSYS_NO_PATHCONV=1` or remote paths get mangled):
   modal volume create capablanca-data           # first time only
   modal volume put capablanca-data data/nnue/ /nnue
   modal run scripts/nnue/modal_train.py --epochs 30
