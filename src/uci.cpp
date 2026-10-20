@@ -133,6 +133,7 @@ int main(int argc, char** argv) {
         else if (cmd == "eval") {
             eval_trace(pos);
             if (nnue_ready()) std::cout << "nnue (side to move) " << nnue_evaluate(pos) << std::endl;
+            std::cout << "evaluate (side to move, with style) " << evaluate(pos) << std::endl;
         }
         else if (cmd == "bench") { int d = 11; is >> d; bench(d); }
     }

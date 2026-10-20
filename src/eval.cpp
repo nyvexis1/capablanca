@@ -115,8 +115,9 @@ S eval_pawns(const Position& pos, const EvalInfo& ei, Color c) {
     return s;
 }
 
-// King safety of color c (penalty returned as positive S, to be subtracted from c)
-S king_danger(const Position& pos, const EvalInfo& ei, Color c) {
+// King safety of color c (penalty returned as positive S, to be subtracted from c), in percent
+// of the neutral weight: 100 is neutral, the style settings change it.
+S king_danger(const Position& pos, const EvalInfo& ei, Color c, int scale) {
     Color a = ~c;
     int k = pos.king_sq(c);
     S pen;
@@ -176,7 +177,6 @@ S king_danger(const Position& pos, const EvalInfo& ei, Color c) {
     else danger = units / 4;
     pen += S(danger, units / std::max(1, KS[KS_EGDIV]));
 
-    int scale = (a == EngineColor) ? Style.aggression : Style.defense;
     pen.mg = pen.mg * scale / 100;
     pen.eg = pen.eg * scale / 100;
     return pen;
@@ -279,8 +279,11 @@ bool insufficient_material(const Position& pos) {
     return (w == 0 && b <= 1) || (b == 0 && w <= 1);
 }
 
-static int evaluate_impl(const Position& pos, bool trace) {
-    EvalInfo ei;
+// Style weight (percent) for the king of color c: attacking the opponent's king uses aggression,
+// our own king uses defense.
+int style_scale(Color c) { return c == EngineColor ? Style.defense : Style.aggression; }
+
+void init_attacks(const Position& pos, EvalInfo& ei) {
     for (Color c : {WHITE, BLACK}) {
         int k = pos.king_sq(c);
         ei.kingZone[c] = KingAttacks[k] | bb(k);
@@ -290,11 +293,30 @@ static int evaluate_impl(const Position& pos, bool trace) {
         add_attacks(ei, c, PAWN, shift_west(pushed));
         add_attacks(ei, c, KING, KingAttacks[k]);
     }
+}
+
+// The style's extra king-safety weight on top of a neutral evaluation (used with NNUE):
+// danger at (scale - 100)% for each king. Side to move's point of view.
+int style_delta(const Position& pos) {
+    if (Style.aggression == 100 && Style.defense == 100) return 0;
+    EvalInfo ei;
+    init_attacks(pos, ei);
+    int phase = 0;
+    for (Color c : {WHITE, BLACK}) eval_side(pos, ei, c, phase);
+    S d = king_danger(pos, ei, BLACK, style_scale(BLACK) - 100) - king_danger(pos, ei, WHITE, style_scale(WHITE) - 100);
+    phase = std::min(phase, 24);
+    int score = (d.mg * phase + d.eg * (24 - phase)) / 24;
+    return pos.stm == WHITE ? score : -score;
+}
+
+static int evaluate_impl(const Position& pos, bool trace) {
+    EvalInfo ei;
+    init_attacks(pos, ei);
     int phase = 0;
     S side[2];
     for (Color c : {WHITE, BLACK}) side[c] = eval_side(pos, ei, c, phase);
     S pawns[2] = {eval_pawns(pos, ei, WHITE), eval_pawns(pos, ei, BLACK)};
-    S king[2] = {king_danger(pos, ei, WHITE), king_danger(pos, ei, BLACK)};
+    S king[2] = {king_danger(pos, ei, WHITE, style_scale(WHITE)), king_danger(pos, ei, BLACK, style_scale(BLACK))};
     S threat[2] = {threats(pos, ei, WHITE), threats(pos, ei, BLACK)};
 
     S total = side[WHITE] - side[BLACK] + pawns[WHITE] - pawns[BLACK]
@@ -334,7 +356,7 @@ bool UseNNUE = true;
 
 int evaluate(const Position& pos) {
     if (UseNNUE && nnue_ready()) {
-        int score = nnue_evaluate(pos);
+        int score = nnue_evaluate(pos) + style_delta(pos);
         return score * (200 - pos.halfmove) / 200;
     }
     return evaluate_impl(pos, false);
