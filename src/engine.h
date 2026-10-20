@@ -41,6 +41,7 @@ struct TuneParam {
 };
 std::vector<TuneParam> tune_params();
 void tune(const std::string& dataFile, int threads, int passes);
+int qsearch_score(const Position& pos);
 
 struct SearchLimits {
     int time[2] = {-1, -1};

@@ -3,3 +3,4 @@ scratch/
 *.exe
 bin/
 matches/
+data/

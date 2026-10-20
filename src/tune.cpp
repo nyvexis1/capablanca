@@ -74,15 +74,20 @@ void tune(const std::string& dataFile, int threads, int passes) {
 
     std::ifstream in(dataFile);
     std::string line;
+    size_t read = 0;
     while (std::getline(in, line)) {
         size_t semi = line.rfind(';');
         if (semi == std::string::npos) continue;
         Sample s;
         s.pos.set_fen(line.substr(0, semi));
         s.result = std::stof(line.substr(semi + 1));
+        read++;
+        // Static eval is only meaningful in quiet positions: drop checks and positions
+        // where captures still change the score.
+        if (s.pos.in_check() || qsearch_score(s.pos) != evaluate(s.pos)) continue;
         samples.push_back(s);
     }
-    std::cout << "loaded " << samples.size() << " positions" << std::endl;
+    std::cout << "read " << read << ", kept " << samples.size() << " quiet positions" << std::endl;
     if (samples.empty()) return;
 
     double K = fit_k();
@@ -96,6 +101,8 @@ void tune(const std::string& dataFile, int threads, int passes) {
         int improved = 0;
         auto t0 = std::chrono::steady_clock::now();
         for (TuneParam& p : params) {
+            // Low piece values are a deliberate style choice, not something to fit to results.
+            if (std::string(p.name) == "PieceValue") continue;
             for (int i = 0; i < p.count; i++) {
                 int& v = p.values[i];
                 int orig = v;

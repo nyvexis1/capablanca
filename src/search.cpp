@@ -597,6 +597,16 @@ void search_start(const Position& pos, const std::vector<Key>& history, const Se
     searchThread = std::thread(iterate, pos);
 }
 
+// Quiescence score of a position from the side to move's view (used by the tuner's quiet filter).
+int qsearch_score(const Position& pos) {
+    stopFlag = false;
+    limits = SearchLimits{};
+    rootDepth = 0;
+    hardLimit = 0;
+    keyStack.clear();
+    return qsearch(pos, -INF, INF, 0);
+}
+
 void bench(int depth) {
     const char* fens[] = {
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
