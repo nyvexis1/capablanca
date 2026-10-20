@@ -297,13 +297,31 @@ void init_attacks(const Position& pos, EvalInfo& ei) {
 
 // The style's extra king-safety weight on top of a neutral evaluation (used with NNUE):
 // danger at (scale - 100)% for each king. Side to move's point of view.
+// Cheap pre-check: could the king of color c be in real danger? Needs an enemy queen and at
+// least two enemy pieces already bearing on its zone; otherwise the danger term is small.
+bool king_in_play(const Position& pos, Color c) {
+    Color a = ~c;
+    if (!pos.pieces[a][QUEEN]) return false;
+    int k = pos.king_sq(c);
+    Bitboard zone = KingAttacks[k] | bb(k);
+    int n = 0;
+    for (int pt = KNIGHT; pt <= QUEEN; pt++)
+        for (Bitboard b = pos.pieces[a][pt]; b; b &= b - 1)
+            if ((attacks_by_type(pt, lsb(b), pos.all) & zone) && ++n >= 2) return true;
+    return false;
+}
+
 int style_delta(const Position& pos) {
-    if (Style.aggression == 100 && Style.defense == 100) return 0;
+    bool w = style_scale(WHITE) != 100 && king_in_play(pos, WHITE);
+    bool b = style_scale(BLACK) != 100 && king_in_play(pos, BLACK);
+    if (!w && !b) return 0;
     EvalInfo ei;
     init_attacks(pos, ei);
     int phase = 0;
     for (Color c : {WHITE, BLACK}) eval_side(pos, ei, c, phase);
-    S d = king_danger(pos, ei, BLACK, style_scale(BLACK) - 100) - king_danger(pos, ei, WHITE, style_scale(WHITE) - 100);
+    S d;
+    if (b) d += king_danger(pos, ei, BLACK, style_scale(BLACK) - 100);
+    if (w) d -= king_danger(pos, ei, WHITE, style_scale(WHITE) - 100);
     phase = std::min(phase, 24);
     int score = (d.mg * phase + d.eg * (24 - phase)) / 24;
     return pos.stm == WHITE ? score : -score;

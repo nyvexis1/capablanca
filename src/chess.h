@@ -92,6 +92,18 @@ void init();
 // Castling rights bits
 enum : int { WK = 1, WQ = 2, BK = 4, BQ = 8 };
 
+// NNUE accumulator support (weights live in nnue.cpp). Positions keep their accumulators up to
+// date in put_piece/remove_piece whenever a network is loaded.
+constexpr int NNUE_H = 256;
+namespace Nnue {
+extern const int16_t* W0;   // [768][NNUE_H], null when no network is loaded
+extern const int16_t* B0;   // [NNUE_H]
+extern uint32_t NetId;      // changes whenever a network is (re)loaded
+inline int feature(Color persp, int pc, int sq) {
+    return (((pc >= 6) != (persp == BLACK)) ? 384 : 0) + (pc % 6) * 64 + (persp == WHITE ? sq : sq ^ 56);
+}
+} // namespace Nnue
+
 struct Position {
     Bitboard pieces[2][6];
     Bitboard occ[2];
@@ -104,6 +116,9 @@ struct Position {
     int fullmove;
     Key key;
     Key pawnKey;
+    // NNUE accumulators, white's and black's perspective; valid when accNet == Nnue::NetId
+    mutable uint32_t accNet = 0;
+    alignas(32) mutable int16_t acc[2][NNUE_H];
 
     void set_fen(const std::string& fen);
     std::string fen() const;

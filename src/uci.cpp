@@ -136,6 +136,29 @@ int main(int argc, char** argv) {
             std::cout << "evaluate (side to move, with style) " << evaluate(pos) << std::endl;
         }
         else if (cmd == "bench") { int d = 11; is >> d; bench(d); }
+        else if (cmd == "nnuecheck") {
+            // Random games: incremental accumulators must match a from-scratch evaluation.
+            int games = 100, bad = 0, checked = 0;
+            is >> games;
+            uint64_t s = 12345;
+            for (int g = 0; g < games && nnue_ready(); g++) {
+                Position p;
+                // Alternate with a castling/en-passant/promotion-rich start
+                p.set_fen(g % 2 ? StartFen : "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+                for (int ply = 0; ply < 300; ply++) {
+                    MoveList legal;
+                    generate_legal(p, legal);
+                    if (!legal.size) break;
+                    s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+                    Position child = p;
+                    child.make(legal.moves[s % legal.size]);
+                    p = child;
+                    checked++;
+                    if (nnue_evaluate(p) != nnue_evaluate_full(p)) bad++;
+                }
+            }
+            std::cout << "nnuecheck: " << checked << " positions, " << bad << " mismatches" << std::endl;
+        }
     }
     search_stop();
     return 0;

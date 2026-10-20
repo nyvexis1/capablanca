@@ -47,6 +47,7 @@ int qsearch_score(const Position& pos);
 bool nnue_load(const std::string& path);
 bool nnue_ready();
 int nnue_evaluate(const Position& pos);
+int nnue_evaluate_full(const Position& pos);
 extern bool UseNNUE;
 
 struct SearchLimits {

@@ -44,6 +44,20 @@ void Position::clear() {
     halfmove = 0;
     fullmove = 1;
     key = pawnKey = 0;
+    if (Nnue::W0) {
+        for (int p = 0; p < 2; p++) std::memcpy(acc[p], Nnue::B0, sizeof(acc[p]));
+        accNet = Nnue::NetId;
+    } else accNet = 0;
+}
+
+// Add (sign +1) or remove (-1) a piece's inputs from both accumulators.
+static inline void acc_update(const Position& p, int pc, int sq, int sign) {
+    for (int persp = 0; persp < 2; persp++) {
+        const int16_t* w = Nnue::W0 + size_t(Nnue::feature(Color(persp), pc, sq)) * NNUE_H;
+        int16_t* a = p.acc[persp];
+        if (sign > 0) for (int i = 0; i < NNUE_H; i++) a[i] = int16_t(a[i] + w[i]);
+        else for (int i = 0; i < NNUE_H; i++) a[i] = int16_t(a[i] - w[i]);
+    }
 }
 
 void Position::put_piece(int pc, int sq) {
@@ -55,6 +69,7 @@ void Position::put_piece(int pc, int sq) {
     board[sq] = pc;
     key ^= Zobrist::psq[pc][sq];
     if (pt == PAWN || pt == KING) pawnKey ^= Zobrist::psq[pc][sq];
+    if (accNet && accNet == Nnue::NetId) acc_update(*this, pc, sq, +1);
 }
 
 void Position::remove_piece(int sq) {
@@ -67,6 +82,7 @@ void Position::remove_piece(int sq) {
     board[sq] = EMPTY;
     key ^= Zobrist::psq[pc][sq];
     if (pt == PAWN || pt == KING) pawnKey ^= Zobrist::psq[pc][sq];
+    if (accNet && accNet == Nnue::NetId) acc_update(*this, pc, sq, -1);
 }
 
 void Position::set_fen(const std::string& fen) {
