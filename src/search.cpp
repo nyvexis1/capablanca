@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <thread>
 
 namespace {
@@ -66,6 +67,8 @@ struct StackEntry {
 
 StackEntry stack[MAX_PLY + 8];
 int history[2][64][64];
+// Continuation history: [previous piece][previous to][piece][to]
+int16_t contHist[12][64][12][64];
 Move counterMoves[12][64];
 Move pvTable[MAX_PLY + 1][MAX_PLY + 1];
 int pvLength[MAX_PLY + 1];
@@ -125,6 +128,30 @@ bool attacks_king_zone(const Position& pos, Move m) {
     return attacks_by_type(pt, to, occ) & KingAttacks[ek] & ~pos.occ[pos.stm];
 }
 
+int16_t* cont_entry(int ply, int back) {
+    if (ply < back) return nullptr;
+    const StackEntry& e = stack[ply - back];
+    if (e.move == MOVE_NONE || e.move == NULL_MOVE || e.piece == EMPTY) return nullptr;
+    return &contHist[e.piece][to_sq(e.move)][0][0];
+}
+
+int quiet_history(const Position& pos, Move m, int ply) {
+    int pc = pos.board[from_sq(m)], to = to_sq(m);
+    int h = history[pos.stm][from_sq(m)][to];
+    if (int16_t* c1 = cont_entry(ply, 1)) h += c1[pc * 64 + to];
+    if (int16_t* c2 = cont_entry(ply, 2)) h += c2[pc * 64 + to];
+    return h;
+}
+
+void update_cont(int ply, int pc, int to, int bonus) {
+    for (int back : {1, 2})
+        if (int16_t* c = cont_entry(ply, back)) {
+            int v = c[pc * 64 + to];
+            v += bonus - v * std::abs(bonus) / 16384;
+            c[pc * 64 + to] = int16_t(v);
+        }
+}
+
 void score_moves(const Position& pos, MoveList& list, Move ttMove, int ply) {
     Move counter = MOVE_NONE;
     if (ply > 0 && stack[ply - 1].move != MOVE_NONE && stack[ply - 1].move != NULL_MOVE)
@@ -140,14 +167,14 @@ void score_moves(const Position& pos, MoveList& list, Move ttMove, int ply) {
             int attacker = type_of(pos.board[from_sq(m)]);
             int mvv = v * 10 - MvvValue[attacker] / 10;
             if (pos.see_ge(m, 0)) sc = 2'000'000 + mvv;
-            else if (Style.sacrificeVision && attacks_king_zone(pos, m)) sc = 850'000 + mvv; // attacking sacrifice
+            else if ((Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc = 850'000 + mvv; // attacking sacrifice
             else sc = -1'000'000 + mvv;
         } else if (m == stack[ply].killers[0]) sc = 900'000;
         else if (m == stack[ply].killers[1]) sc = 890'000;
         else if (m == counter) sc = 880'000;
         else {
-            sc = history[pos.stm][from_sq(m)][to_sq(m)];
-            if (Style.sacrificeVision && attacks_king_zone(pos, m)) sc += 1500;
+            sc = quiet_history(pos, m, ply);
+            if ((Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc += 1500;
         }
     }
 }
@@ -320,15 +347,16 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         bool quiet = !is_tactical(m);
         bool givesCheck = child.in_check();
         bool kingStrike = Style.sacrificeVision && (givesCheck || attacks_king_zone(pos, m));
+        bool svPrune = Style.sacrificeVision & SV_PRUNE, svLmr = Style.sacrificeVision & SV_LMR;
         int see = (quiet && !kingStrike) ? 0 : pos.see(m);
         bool attackingSac = kingStrike && see < -50;
 
         // ---- Pruning (never for attacking sacrifices: that is where brilliancies hide) ----
-        if (!root && bestScore > -MATE_BOUND && pos.non_pawn_material(pos.stm) && !attackingSac) {
+        if (!root && bestScore > -MATE_BOUND && pos.non_pawn_material(pos.stm) && !(svPrune && attackingSac)) {
             if (quiet && !givesCheck) {
                 int lmpLimit = (3 + depth * depth) / (2 - improving);
-                if (depth <= 8 && moveCount > lmpLimit && !kingStrike) continue;
-                if (depth <= 8 && !inCheck && staticEval + 100 + 90 * depth <= alpha && !kingStrike) continue;
+                if (depth <= 8 && moveCount > lmpLimit && !(svPrune && kingStrike)) continue;
+                if (depth <= 8 && !inCheck && staticEval + 100 + 90 * depth <= alpha && !(svPrune && kingStrike)) continue;
                 if (depth <= 8 && !pos.see_ge(m, -60 * depth)) continue;
             } else if (depth <= 6 && see < -100 * depth) {
                 continue;
@@ -348,8 +376,8 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
                 if (s < sBeta) ext = 1;
                 else if (sBeta >= beta) return sBeta; // multi-cut
             }
-            if (!ext && givesCheck && (see >= 0 || kingStrike)) ext = 1;
-            if (!ext && attackingSac && depth <= 10) ext = 1; // verify the sacrifice deeper
+            if (!ext && givesCheck && (see >= 0 || (kingStrike && (Style.sacrificeVision & SV_CHECKEXT)))) ext = 1;
+            if (!ext && attackingSac && (Style.sacrificeVision & SV_EXT) && depth <= 10) ext = 1; // verify the sacrifice deeper
         }
         int newDepth = depth - 1 + ext;
 
@@ -364,10 +392,10 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
             r += !improving;
             r -= pvNode;
             if (m == stack[ply].killers[0] || m == stack[ply].killers[1]) r--;
-            if (quiet) r -= history[pos.stm][from_sq(m)][to_sq(m)] / 6000;
+            if (quiet) r -= quiet_history(pos, m, ply) / 8000;
             if (givesCheck) r--;
-            if (kingStrike) r--;      // keep attacking ideas alive
-            if (attackingSac) r -= 2; // and sacrifices even more so
+            if (svLmr && kingStrike) r--;      // keep attacking ideas alive
+            if (svLmr && attackingSac) r -= 2; // and sacrifices even more so
             r = std::clamp(r, 0, newDepth - 1);
             score = -search(child, -alpha - 1, -alpha, newDepth - r, ply + 1, true);
             if (score > alpha && r > 0) score = -search(child, -alpha - 1, -alpha, newDepth, ply + 1, !cutNode);
@@ -413,6 +441,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         for (int j = 0; j < quietCount; j++) {
             Move q = quiets[j];
             update_history(history[pos.stm][from_sq(q)][to_sq(q)], q == bestMove ? bonus : -bonus);
+            update_cont(ply, pos.board[from_sq(q)], to_sq(q), q == bestMove ? bonus : -bonus);
         }
     }
 
@@ -483,11 +512,11 @@ void iterate(Position pos) {
 
         if (!silent) {
             int64_t ms = elapsed_ms();
-            std::cout << "info depth " << rootDepth << " seldepth " << selDepth << " score " << score_string(score)
-                      << " nodes " << nodes << " nps " << (ms > 0 ? nodes * 1000 / ms : nodes) << " time " << ms
-                      << " pv";
-            for (int j = 0; j < pvLength[0]; j++) std::cout << " " << move_to_uci(pvTable[0][j]);
-            std::cout << std::endl;
+            std::string info = "info depth " + std::to_string(rootDepth) + " seldepth " + std::to_string(selDepth) +
+                               " score " + score_string(score) + " nodes " + std::to_string(nodes) + " nps " +
+                               std::to_string(ms > 0 ? nodes * 1000 / ms : nodes) + " time " + std::to_string(ms) + " pv";
+            for (int j = 0; j < pvLength[0]; j++) info += " " + move_to_uci(pvTable[0][j]);
+            sync_out(info);
         }
 
         stability = best == prevBest ? std::min(stability + 1, 6) : 0;
@@ -501,10 +530,16 @@ void iterate(Position pos) {
     }
 
     while (limits.infinite && !stopFlag) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (!silent) std::cout << "bestmove " << move_to_uci(best) << std::endl;
+    if (!silent) sync_out("bestmove " + move_to_uci(best));
 }
 
 } // namespace
+
+void sync_out(const std::string& line) {
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock(m);
+    std::cout << line << std::endl;
+}
 
 void tt_resize(size_t mb) {
     size_t entries = mb * 1024 * 1024 / sizeof(TTEntry);
@@ -518,6 +553,7 @@ void new_game() {
     std::fill(TT.begin(), TT.end(), TTEntry{});
     memset(history, 0, sizeof(history));
     memset(counterMoves, 0, sizeof(counterMoves));
+    memset(contHist, 0, sizeof(contHist));
     for (int d = 0; d < 64; d++)
         for (int m = 0; m < 64; m++)
             lmrTable[d][m] = (d && m) ? int(0.75 + std::log(d) * std::log(m) / 2.25) : 0;

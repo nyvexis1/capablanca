@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <string>
+#include <vector>
 
 StyleConfig Style;
 Color EngineColor = WHITE;
@@ -20,26 +22,31 @@ struct S {
     S& operator-=(S o) { mg -= o.mg; eg -= o.eg; return *this; }
 };
 
-const S PieceValue[6] = {{90, 115}, {330, 310}, {355, 330}, {480, 560}, {980, 1010}, {0, 0}};
+S PieceValue[6] = {{90, 115}, {330, 310}, {355, 330}, {480, 560}, {980, 1010}, {0, 0}};
 const int PhaseWeight[6] = {0, 1, 1, 2, 4, 0};
 
 S PST[6][64]; // from white's point of view
 
 // Mobility: bonus per reachable square minus a baseline
-const S MobilityWeight[6] = {{0, 0}, {4, 4}, {5, 5}, {2, 4}, {1, 2}, {0, 0}};
-const int MobilityBase[6] = {0, 4, 6, 7, 14, 0};
+S MobilityWeight[6] = {{0, 0}, {4, 4}, {5, 5}, {2, 4}, {1, 2}, {0, 0}};
+int MobilityBase[6] = {0, 4, 6, 7, 14, 0};
 
 // King attack weights per attacking piece
-const int AttackWeight[6] = {0, 25, 20, 30, 60, 0};
+int AttackWeight[6] = {0, 25, 20, 30, 60, 0};
 
-const S PassedBonus[8] = {{0, 0}, {5, 10}, {8, 15}, {15, 28}, {30, 55}, {55, 95}, {90, 150}, {0, 0}};
-const S Doubled = {10, 20}, Isolated = {10, 12}, Phalanx = {6, 6}, Supported = {7, 5};
-const S BishopPair = {30, 50};
-const S RookOpen = {25, 10}, RookSemiOpen = {12, 8};
-const S KnightOutpost = {18, 8};
-const S ThreatByPawn = {45, 35}, Hanging = {25, 15};
-const S AdvancedPiece = {4, 0};
-const S Tempo = {18, 8};
+S PassedBonus[8] = {{0, 0}, {5, 10}, {8, 15}, {15, 28}, {30, 55}, {55, 95}, {90, 150}, {0, 0}};
+S Doubled = {10, 20}, Isolated = {10, 12}, Phalanx = {6, 6}, Supported = {7, 5};
+S BishopPair = {30, 50};
+S RookOpen = {25, 10}, RookSemiOpen = {12, 8};
+S KnightOutpost = {18, 8};
+S ThreatByPawn = {45, 35}, Hanging = {25, 15};
+S AdvancedPiece = {4, 0};
+S Tempo = {18, 8};
+
+// King-safety constants (tunable)
+enum { KS_SHIELD2, KS_SHIELD3, KS_SHIELDNONE, KS_SEMIOPEN, KS_OPEN, KS_STORM, KS_ZONEHIT, KS_QCHECK, KS_RCHECK,
+       KS_BCHECK, KS_NCHECK, KS_WEAK, KS_SHIELDMUL, KS_NOQUEEN, KS_KNIGHTDEF, KS_DANGERDIV, KS_EGDIV, KS_COUNT };
+int KS[KS_COUNT] = {12, 22, 32, 10, 22, 8, 8, 75, 60, 40, 60, 18, 2, 180, 20, 560, 10};
 
 int centre_dist(int sq) {
     int f = file_of(sq), r = rank_of(sq);
@@ -116,16 +123,16 @@ S king_danger(const Position& pos, const EvalInfo& ei, Color c) {
             if (d > 0) best = std::min(best, d);
         }
         if (best == 1) shield += 0;
-        else if (best == 2) shield += 12;
-        else if (best == 3) shield += 22;
-        else shield += 32;
-        if (!ownOnFile) shield += enemyOnFile ? 10 : 22; // (semi-)open file towards our king
+        else if (best == 2) shield += KS[KS_SHIELD2];
+        else if (best == 3) shield += KS[KS_SHIELD3];
+        else shield += KS[KS_SHIELDNONE];
+        if (!ownOnFile) shield += enemyOnFile ? KS[KS_SEMIOPEN] : KS[KS_OPEN]; // (semi-)open file towards our king
         // enemy pawn storm
         t = enemyOnFile;
         while (t) {
             int sq = pop_lsb(t);
             int d = relative_rank(c, sq) - relative_rank(c, k);
-            if (d > 0 && d <= 3) shield += (4 - d) * 8;
+            if (d > 0 && d <= 3) shield += (4 - d) * KS[KS_STORM];
         }
     }
     pen.mg += shield;
@@ -143,18 +150,18 @@ S king_danger(const Position& pos, const EvalInfo& ei, Color c) {
     Bitboard weak = KingAttacks[k] & ei.attacked[a] & ~ei.attacked2[c];
 
     int units = ei.kingAttackWeight[a] * attackers / 2
-              + ei.kingZoneHits[a] * 8
-              + std::min(qChecks, 2) * 75 + std::min(rChecks, 2) * 60
-              + std::min(bChecks, 2) * 40 + std::min(nChecks, 2) * 60
-              + popcount(weak) * 18
-              + shield * 2
-              - (hasQueen ? 0 : 180)
-              - popcount(ei.attackedBy[c][KNIGHT] & KingAttacks[k]) * 20;
+              + ei.kingZoneHits[a] * KS[KS_ZONEHIT]
+              + std::min(qChecks, 2) * KS[KS_QCHECK] + std::min(rChecks, 2) * KS[KS_RCHECK]
+              + std::min(bChecks, 2) * KS[KS_BCHECK] + std::min(nChecks, 2) * KS[KS_NCHECK]
+              + popcount(weak) * KS[KS_WEAK]
+              + shield * KS[KS_SHIELDMUL]
+              - (hasQueen ? 0 : KS[KS_NOQUEEN])
+              - popcount(ei.attackedBy[c][KNIGHT] & KingAttacks[k]) * KS[KS_KNIGHTDEF];
     units = std::clamp(units, 0, 900);
     int danger;
-    if (attackers >= 2 || qChecks) danger = units * units / 560;
+    if (attackers >= 2 || qChecks) danger = units * units / std::max(100, KS[KS_DANGERDIV]);
     else danger = units / 4;
-    pen += S(danger, units / 10);
+    pen += S(danger, units / std::max(1, KS[KS_EGDIV]));
 
     int scale = (a == EngineColor) ? Style.aggression : Style.defense;
     pen.mg = pen.mg * scale / 100;
@@ -241,6 +248,16 @@ void init_eval() {
         int kmg = r == 0 ? kingBack[f] : r == 1 ? kingBack[f] / 2 - 18 : -40 - 10 * r;
         PST[KING][sq] = S(kmg, 30 - 12 * cd);
     }
+#if __has_include("tuned.inc")
+    struct TunedEntry { const char* name; std::vector<int> v; };
+    static const TunedEntry Tuned[] = {
+#include "tuned.inc"
+    };
+    for (const TuneParam& p : tune_params())
+        for (const TunedEntry& t : Tuned)
+            if (std::string(t.name) == p.name && int(t.v.size()) == p.count)
+                for (int i = 0; i < p.count; i++) p.values[i] = t.v[i];
+#endif
 }
 
 bool insufficient_material(const Position& pos) {
@@ -299,4 +316,21 @@ static int evaluate_impl(const Position& pos, bool trace) {
 }
 
 int evaluate(const Position& pos) { return evaluate_impl(pos, false); }
+
+std::vector<TuneParam> tune_params() {
+    auto sArr = [](const char* n, S* p, int count) { return TuneParam{n, &p->mg, count * 2, true}; };
+    return {
+        sArr("PieceValue", PieceValue, 5),
+        TuneParam{"PST", &PST[0][0].mg, 6 * 64 * 2, true},
+        sArr("MobilityWeight", MobilityWeight, 6),
+        TuneParam{"AttackWeight", AttackWeight, 6, false},
+        sArr("PassedBonus", PassedBonus, 8),
+        sArr("Doubled", &Doubled, 1), sArr("Isolated", &Isolated, 1), sArr("Phalanx", &Phalanx, 1),
+        sArr("Supported", &Supported, 1), sArr("BishopPair", &BishopPair, 1), sArr("RookOpen", &RookOpen, 1),
+        sArr("RookSemiOpen", &RookSemiOpen, 1), sArr("KnightOutpost", &KnightOutpost, 1),
+        sArr("ThreatByPawn", &ThreatByPawn, 1), sArr("Hanging", &Hanging, 1),
+        sArr("AdvancedPiece", &AdvancedPiece, 1), sArr("Tempo", &Tempo, 1),
+        TuneParam{"KS", KS, KS_COUNT, false},
+    };
+}
 void eval_trace(const Position& pos) { evaluate_impl(pos, true); }

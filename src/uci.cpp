@@ -64,7 +64,7 @@ void set_option(std::istringstream& is) {
     else if (name == "aggression") Style.aggression = std::stoi(value);
     else if (name == "defense") Style.defense = std::stoi(value);
     else if (name == "contempt") Style.contempt = std::stoi(value);
-    else if (name == "sacrificevision") Style.sacrificeVision = (value == "true" || value == "1");
+    else if (name == "sacrificevision") Style.sacrificeVision = std::stoi(value);
 }
 
 } // namespace
@@ -78,6 +78,11 @@ int main(int argc, char** argv) {
     new_game();
     pos.set_fen(StartFen);
 
+    if (argc > 1 && std::string(argv[1]) == "tune") {
+        // capablanca tune <data> [threads] [passes]
+        tune(argv[2], argc > 3 ? std::stoi(argv[3]) : 8, argc > 4 ? std::stoi(argv[4]) : 10);
+        return 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "bench") {
         bench(argc > 2 ? std::stoi(argv[2]) : 11);
         return 0;
@@ -97,9 +102,9 @@ int main(int argc, char** argv) {
                       << "option name Aggression type spin default " << Style.aggression << " min 0 max 300\n"
                       << "option name Defense type spin default " << Style.defense << " min 0 max 300\n"
                       << "option name Contempt type spin default " << Style.contempt << " min -100 max 100\n"
-                      << "option name SacrificeVision type check default true\n"
+                      << "option name SacrificeVision type spin default " << Style.sacrificeVision << " min 0 max 31\n"
                       << "uciok" << std::endl;
-        } else if (cmd == "isready") std::cout << "readyok" << std::endl;
+        } else if (cmd == "isready") sync_out("readyok");
         else if (cmd == "ucinewgame") { search_stop(); new_game(); }
         else if (cmd == "setoption") { search_stop(); set_option(is); }
         else if (cmd == "position") { search_stop(); set_position(is); }

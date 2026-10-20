@@ -218,6 +218,17 @@ bool Position::gives_check(Move m) const {
 
 bool Position::is_pseudo_legal(Move m) const {
     if (m == MOVE_NONE) return false;
+    int from = from_sq(m), to = to_sq(m), flag = move_flag(m);
+    int pc = board[from];
+    if (pc == EMPTY || color_of(pc) != stm) return false;
+    int pt = type_of(pc);
+    // Fast path for ordinary piece moves; pawns and castling use the generator.
+    if (pt != PAWN && flag <= CAPTURE && !is_castle(m) && flag != DOUBLE_PUSH) {
+        if (!(attacks_by_type(pt, from, all) & bb(to))) return false;
+        int target = board[to];
+        if (flag == CAPTURE) return target != EMPTY && color_of(target) != stm;
+        return target == EMPTY;
+    }
     MoveList list;
     generate_moves(*this, list, false);
     for (int i = 0; i < list.size; i++)

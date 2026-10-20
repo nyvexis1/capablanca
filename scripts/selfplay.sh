@@ -1,0 +1,16 @@
+#!/bin/sh
+# Self-play A/B test with SPRT. Usage:
+#   scripts/selfplay.sh <games> "<optsA>" "<optsB>" [tc] [engineA] [engineB]
+# opts are fastchess engine options, e.g. "option.SacrificeVision=false option.Aggression=100"
+cd "$(dirname "$0")/.."
+GAMES=${1:-400}; OPTA=$2; OPTB=$3; TC=${4:-10+0.1}
+A=$(cygpath -w "$(realpath ${5:-capablanca.exe})"); B=$(cygpath -w "$(realpath ${6:-capablanca.exe})")
+FC=tools/fastchess/fastchess-windows-x86-64/fastchess.exe
+STAMP=$(date +%Y%m%d-%H%M%S)
+$FC -engine cmd=$A name=A $OPTA -engine cmd=$B name=B $OPTB \
+    -each tc=$TC option.Hash=16 \
+    -openings file=tools/books/8moves_v3.pgn format=pgn order=random \
+    -rounds $((GAMES / 2)) -games 2 -repeat -concurrency 14 -recover \
+    -sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 \
+    -pgnout file=matches/selfplay_$STAMP.pgn 2>&1 | grep -E "^Elo|^Games|^LLR|SPRT" | tail -4
+rm -f config.json
