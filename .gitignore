@@ -1,0 +1,5 @@
+tools/
+scratch/
+*.exe
+bin/
+matches/
