@@ -58,6 +58,8 @@ void new_game();
 void search_start(const Position& pos, const std::vector<Key>& history, const SearchLimits& limits);
 void search_stop();
 void search_wait();
+int search_sync(const Position& pos, const std::vector<Key>& history, const SearchLimits& limits, Move& best);
+void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes);
 void bench(int depth);
 // Thread-safe line output (search thread and UCI thread share stdout)
 void sync_out(const std::string& line);

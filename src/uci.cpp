@@ -83,6 +83,11 @@ int main(int argc, char** argv) {
         tune(argv[2], argc > 3 ? std::stoi(argv[3]) : 8, argc > 4 ? std::stoi(argv[4]) : 10);
         return 0;
     }
+    if (argc > 2 && std::string(argv[1]) == "datagen") {
+        // capablanca datagen <out.bin> [seed] [nodes per move]
+        datagen(argv[2], argc > 3 ? std::stoull(argv[3]) : 1, argc > 4 ? std::stoull(argv[4]) : 5000);
+        return 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "bench") {
         bench(argc > 2 ? std::stoi(argv[2]) : 11);
         return 0;

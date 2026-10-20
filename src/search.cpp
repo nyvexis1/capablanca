@@ -86,6 +86,8 @@ SearchLimits limits;
 std::chrono::steady_clock::time_point startTime;
 int64_t softLimit = 0, hardLimit = 0;
 bool silent = false;
+int lastScore = 0;  // score and best move of the most recent iterate() (for search_sync)
+Move lastBest = MOVE_NONE;
 int nmpMinPly = 0; // null move is off below this ply while a verification search runs
 
 int64_t elapsed_ms() {
@@ -579,6 +581,8 @@ void iterate(Position pos) {
         if (std::abs(score) >= MATE_BOUND && rootDepth > 10 && softLimit > 0) break;
     }
 
+    lastScore = prevScore;
+    lastBest = best;
     while (limits.infinite && !stopFlag) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     if (!silent) sync_out("bestmove " + move_to_uci(best));
 }
@@ -644,6 +648,21 @@ int qsearch_score(const Position& pos) {
     hardLimit = 0;
     keyStack.clear();
     return qsearch(pos, -INF, INF, 0);
+}
+
+// Search on the calling thread without printing; returns the score (side to move's view).
+int search_sync(const Position& pos, const std::vector<Key>& history, const SearchLimits& lim, Move& best) {
+    silent = true;
+    stopFlag = false;
+    limits = lim;
+    keyStack = history;
+    EngineColor = pos.stm;
+    startTime = std::chrono::steady_clock::now();
+    softLimit = hardLimit = 0;
+    iterate(pos);
+    silent = false;
+    best = lastBest;
+    return lastScore;
 }
 
 void bench(int depth) {
