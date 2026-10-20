@@ -86,6 +86,7 @@ SearchLimits limits;
 std::chrono::steady_clock::time_point startTime;
 int64_t softLimit = 0, hardLimit = 0;
 bool silent = false;
+int nmpMinPly = 0; // null move is off below this ply while a verification search runs
 
 int64_t elapsed_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
@@ -340,7 +341,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         // Reverse futility pruning
         if (depth <= 7 && eval - 75 * (depth - improving) >= beta && std::abs(eval) < MATE_BOUND) return eval;
         // Null move pruning
-        if (depth >= 3 && eval >= beta && ply > 0 && stack[ply - 1].move != NULL_MOVE &&
+        if (depth >= 3 && eval >= beta && ply > 0 && ply >= nmpMinPly && stack[ply - 1].move != NULL_MOVE &&
             pos.non_pawn_material(pos.stm) && beta > -MATE_BOUND) {
             int R = 3 + depth / 4 + std::min(3, (eval - beta) / 200);
             Position child = pos;
@@ -351,7 +352,19 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
             int score = -search(child, -beta, -beta + 1, depth - R, ply + 1, !cutNode);
             keyStack.pop_back();
             if (stopFlag) return 0;
-            if (score >= beta) return score >= MATE_BOUND ? beta : score;
+            if (score >= beta) {
+                if (score >= MATE_BOUND) score = beta;
+                // With a single piece left zugzwang is common, and at high depth a wrong
+                // cutoff is expensive: confirm with a normal search that has null move off.
+                Bitboard pieces = pos.occ[pos.stm] & ~pos.pieces[pos.stm][PAWN] & ~pos.pieces[pos.stm][KING];
+                if (more_than_one(pieces) && depth < 12) return score;
+                int savedMinPly = nmpMinPly;
+                nmpMinPly = ply + 3 * (depth - R) / 4;
+                int v = search(pos, beta - 1, beta, depth - R, ply, false);
+                nmpMinPly = savedMinPly;
+                if (stopFlag) return 0;
+                if (v >= beta) return score;
+            }
         }
         // Razoring
         if (depth <= 3 && eval + 250 * depth < alpha) {
