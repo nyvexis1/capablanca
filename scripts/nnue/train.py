@@ -12,6 +12,7 @@ Usage:
 import argparse
 import glob
 import math
+import os
 import time
 
 import numpy as np
@@ -27,7 +28,8 @@ assert REC.itemsize == 32
 
 
 def load(paths):
-    arrays = [np.fromfile(p, dtype=REC) for p in paths]
+    # count= skips a partial record at the end of a file (a worker stopped mid-write)
+    arrays = [np.fromfile(p, dtype=REC, count=os.path.getsize(p) // REC.itemsize) for p in paths]
     data = np.concatenate([a for a in arrays if len(a)])
     return data
 
