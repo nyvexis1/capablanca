@@ -8,7 +8,22 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <vector>
+
+// The default network is compiled into the executable (build.sh passes NNUE_EMBED when
+// nets/default.nnue exists), so the engine is a single file.
+#ifdef NNUE_EMBED
+asm(".section .rdata,\"dr\"\n"
+    ".balign 64\n"
+    ".globl capablanca_net\n"
+    "capablanca_net:\n"
+    ".incbin \"" NNUE_EMBED "\"\n"
+    ".globl capablanca_net_end\n"
+    "capablanca_net_end:\n"
+    ".text\n");
+extern "C" const char capablanca_net[], capablanca_net_end[];
+#endif
 
 namespace Nnue {
 const int16_t* W0 = nullptr;
@@ -55,9 +70,9 @@ int output(const int16_t* us, const int16_t* them) {
 
 } // namespace
 
-bool nnue_load(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
+namespace {
+
+bool load_stream(std::istream& in) {
     char magic[8];
     int32_t h = 0;
     in.read(magic, 8);
@@ -78,6 +93,22 @@ bool nnue_load(const std::string& path) {
     Nnue::B0 = B0.data();
     Nnue::NetId++; // existing accumulators are now stale and get rebuilt on first use
     return true;
+}
+
+} // namespace
+
+bool nnue_load(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return in && load_stream(in);
+}
+
+bool nnue_load_embedded() {
+#ifdef NNUE_EMBED
+    std::istringstream in(std::string(capablanca_net, size_t(capablanca_net_end - capablanca_net)), std::ios::binary);
+    return load_stream(in);
+#else
+    return false;
+#endif
 }
 
 bool nnue_ready() { return Nnue::W0 != nullptr; }

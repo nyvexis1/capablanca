@@ -45,6 +45,7 @@ int qsearch_score(const Position& pos);
 
 // NNUE (src/nnue.cpp). evaluate() uses it when a net is loaded and UseNNUE is set.
 bool nnue_load(const std::string& path);
+bool nnue_load_embedded();
 bool nnue_ready();
 int nnue_evaluate(const Position& pos);
 int nnue_evaluate_full(const Position& pos);

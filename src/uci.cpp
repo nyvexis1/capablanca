@@ -80,10 +80,10 @@ int main(int argc, char** argv) {
     init_bitboards();
     Zobrist::init();
     init_eval();
-    // Default network next to the executable, if present
+    // Network: capablanca.nnue next to the executable if present, else the built-in one
     {
         std::string exe = argv[0], dir = exe.substr(0, exe.find_last_of("/\\") + 1);
-        if (!nnue_load(dir + "capablanca.nnue")) nnue_load("capablanca.nnue");
+        if (!nnue_load(dir + "capablanca.nnue")) nnue_load_embedded();
     }
     tt_resize(64);
     new_game();
