@@ -4,5 +4,6 @@ scratch/
 bin/
 matches/
 data/
-nets/
+nets/*
 *.nnue
+!nets/default.nnue
