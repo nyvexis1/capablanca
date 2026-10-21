@@ -10,11 +10,13 @@ Usage: python scripts/brilliancy.py matches/x.pgn [--shallow 8] [--deep 20] [--l
 """
 import argparse
 import glob
+import os
 import chess
 import chess.engine
 import chess.pgn
 
-SF = "tools/stockfish/stockfish/stockfish-windows-x86-64-avx2.exe"
+SF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools", "stockfish", "stockfish",
+                  "stockfish-windows-x86-64-avx2.exe")
 VAL = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
 
 
