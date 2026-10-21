@@ -2,6 +2,8 @@
 # Match Capablanca against reduced-strength Stockfish.
 # Usage: scripts/match.sh <stockfish_elo> <games> [tc] [engine.exe] [concurrency]
 cd "$(dirname "$0")/.."
+# Engines lower their own priority (see uci.cpp) so long matches do not make the PC stutter
+export CAPABLANCA_PRIORITY=low
 ELO=${1:-1320}; GAMES=${2:-40}; TC=${3:-10+0.1}; CONC=${5:-8}
 ENG=$(cygpath -w "$(realpath ${4:-capablanca.exe})")
 FC=tools/fastchess/fastchess-windows-x86-64/fastchess.exe

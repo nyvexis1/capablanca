@@ -22,11 +22,11 @@ volume = modal.Volume.from_name("capablanca-data", create_if_missing=True)
 
 
 @app.function(gpu="H100", image=image, volumes={"/data": volume}, timeout=8 * 3600, memory=65536)
-def train(epochs: int, batch: int, lr: float, lam: float):
+def train(epochs: int, batch: int, lr: float, lam: float, out: str):
     import subprocess
 
     subprocess.run(
-        ["python", "/root/train.py", "/data/nnue/*.bin", "--out", "/data/capablanca.nnue",
+        ["python", "/root/train.py", "/data/nnue/*.bin", "--out", f"/data/{out}",
          "--epochs", str(epochs), "--batch", str(batch), "--lr", str(lr), "--lam", str(lam)],
         check=True,
     )
@@ -34,5 +34,5 @@ def train(epochs: int, batch: int, lr: float, lam: float):
 
 
 @app.local_entrypoint()
-def main(epochs: int = 30, batch: int = 16384, lr: float = 1e-3, lam: float = 0.75):
-    train.remote(epochs, batch, lr, lam)
+def main(epochs: int = 30, batch: int = 16384, lr: float = 1e-3, lam: float = 0.75, out: str = "capablanca.nnue"):
+    train.remote(epochs, batch, lr, lam, out)

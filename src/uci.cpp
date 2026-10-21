@@ -2,6 +2,11 @@
 #include "engine.h"
 #include <iostream>
 #include <sstream>
+#include <cstdlib>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -77,6 +82,11 @@ void set_option(std::istringstream& is) {
 
 int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
+#ifdef _WIN32
+    // Test harnesses set CAPABLANCA_PRIORITY=low so long matches don't make the PC stutter.
+    if (const char* p = std::getenv("CAPABLANCA_PRIORITY"); p && std::string(p) == "low")
+        SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+#endif
     init_bitboards();
     Zobrist::init();
     init_eval();
