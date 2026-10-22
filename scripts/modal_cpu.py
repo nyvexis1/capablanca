@@ -46,7 +46,7 @@ def source_tar(ref: str) -> bytes:
     return subprocess.run(["git", "archive", "--format=tar", ref, *FILES], check=True, capture_output=True).stdout
 
 
-def build(tar: bytes, where: str) -> str:
+def build(tar: bytes, where: str, flags: str = "") -> str:
     os.makedirs(where, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(tar)) as t:
         t.extractall(where, filter="data")
@@ -59,7 +59,7 @@ def build(tar: bytes, where: str) -> str:
     srcs = sorted(os.path.join("src", s) for s in os.listdir(os.path.join(where, "src")) if s.endswith(".cpp"))
     subprocess.run(["g++", '-DNNUE_EMBED="nets/default.nnue"', "-O3", "-march=native", "-flto=auto", "-std=c++20",
                     "-pthread", "-DNDEBUG", "-include", "algorithm",  # older refs relied on MinGW's implicit include
-                    *srcs, "-o", exe], cwd=where, check=True)
+                    *flags.split(), *srcs, "-o", exe], cwd=where, check=True)
     print(subprocess.run([exe, "bench"], capture_output=True, text=True).stdout.strip().splitlines()[-1], flush=True)
     return exe
 
@@ -82,8 +82,8 @@ def book(games: int, conc: int) -> list[str]:
 
 
 @app.function(image=image, timeout=8 * 3600)
-def run_selfplay(a: bytes, b: bytes, games: int, tc: str, elo0: float, elo1: float, conc: int) -> str:
-    ea, eb = build(a, "/w/a"), build(b, "/w/b")
+def run_selfplay(a: bytes, b: bytes, games: int, tc: str, elo0: float, elo1: float, conc: int, a_flags: str = "") -> str:
+    ea, eb = build(a, "/w/a", a_flags), build(b, "/w/b")
     return fastchess(["-engine", f"cmd={ea}", "name=A", "-engine", f"cmd={eb}", "name=B",
                       "-each", f"tc={tc}", "option.Hash=16", *book(games, conc),
                       "-sprt", f"elo0={elo0}", f"elo1={elo1}", "alpha=0.05", "beta=0.05"])
@@ -130,8 +130,9 @@ def run_speed(src: bytes, seconds: int, workers: int) -> str:
 
 @app.local_entrypoint()
 def selfplay(a: str = "WORKTREE", b: str = "HEAD", games: int = 3000, tc: str = "10+0.1",
-             elo0: float = 0, elo1: float = 10, cores: int = 32):
-    print(run_selfplay.with_options(cpu=cores).remote(source_tar(a), source_tar(b), games, tc, elo0, elo1, cores))
+             elo0: float = 0, elo1: float = 10, cores: int = 32, a_flags: str = ""):
+    # a_flags: extra compiler flags for engine A, e.g. "-DNNUE_HIDDEN=512"
+    print(run_selfplay.with_options(cpu=cores).remote(source_tar(a), source_tar(b), games, tc, elo0, elo1, cores, a_flags))
 
 
 @app.local_entrypoint()

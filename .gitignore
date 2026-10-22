@@ -7,3 +7,4 @@ data/
 nets/*
 *.nnue
 !nets/default.nnue
+!nets/queen.nnue
