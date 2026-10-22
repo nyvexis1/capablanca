@@ -259,7 +259,7 @@ int qsearch(const Position& pos, int alpha, int beta, int ply, int qply = 0) {
         // check: forcing sacrifices then get one more look instead of vanishing at the horizon.
         bool losing = !inCheck && !pos.see_ge(m, 0);
         if (losing && qply > 0) continue;
-        if (!inCheck) {
+        if (!inCheck && !losing) { // losing captures are kept for the checking-sacrifice test below
             int victim = pos.captured_type(m);
             int gain = (victim == NO_PIECE_TYPE ? 0 : MvvValue[victim]) + (is_promotion(m) ? 850 : 0);
             if (standPat + gain + 200 <= alpha) continue; // delta pruning

@@ -70,11 +70,12 @@ void set_option(std::istringstream& is) {
     else if (name == "defense") Style.defense = std::stoi(value);
     else if (name == "contempt") Style.contempt = std::stoi(value);
     else if (name == "sacrificevision") Style.sacrificeVision = std::stoi(value);
-    else if (name == "usennue") UseNNUE = value == "true";
+    else if (name == "usennue") { UseNNUE = value == "true"; new_game(); } // cached scores came from the old evaluator
     else if (name == "evalfile") {
         std::string file = value, rest;
         while (is >> rest) file += " " + rest;
         sync_out(nnue_load(file) ? "info string loaded network " + file : "info string could not load network " + file);
+        new_game();
     }
 }
 

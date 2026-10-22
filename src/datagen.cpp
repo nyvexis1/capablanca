@@ -15,6 +15,7 @@
 //   u8  unused
 #include "engine.h"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -78,6 +79,10 @@ void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes) {
 
     std::mt19937_64 rng(seed);
     std::ofstream out(outFile, std::ios::binary | std::ios::app);
+    if (!out) {
+        std::cerr << "datagen: cannot open " << outFile << std::endl;
+        std::exit(1);
+    }
     uint64_t games = 0, positions = 0;
     int counts[3] = {0, 0, 0};
 
@@ -141,6 +146,10 @@ void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes) {
         for (Record& r : recs) r.result = uint8_t(result);
         out.write(reinterpret_cast<const char*>(recs.data()), std::streamsize(recs.size() * sizeof(Record)));
         out.flush();
+        if (!out) {
+            std::cerr << "datagen: write to " << outFile << " failed (disk full?)" << std::endl;
+            std::exit(1);
+        }
         games++;
         positions += recs.size();
         counts[result]++;

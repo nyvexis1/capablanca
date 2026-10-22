@@ -27,11 +27,16 @@ REC = np.dtype([("occ", "<u8"), ("pcs", "u1", 16), ("stm", "u1"), ("half", "u1")
 assert REC.itemsize == 32
 
 
-def load(paths):
+def load(paths, val_frac):
+    """Returns (train, val). Each file holds whole games back to back, so the last val_frac of
+    every file goes to validation: held-out games, not positions from games seen in training."""
     # count= skips a partial record at the end of a file (a worker stopped mid-write)
     arrays = [np.fromfile(p, dtype=REC, count=os.path.getsize(p) // REC.itemsize) for p in paths]
-    data = np.concatenate([a for a in arrays if len(a)])
-    return data
+    arrays = [a for a in arrays if len(a)]
+    cuts = [len(a) - max(1, int(len(a) * val_frac)) for a in arrays]
+    train = np.concatenate([a[:c] for a, c in zip(arrays, cuts)])
+    val = np.concatenate([a[c:] for a, c in zip(arrays, cuts)])
+    return train, val
 
 
 def features(batch, device):
@@ -113,11 +118,8 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     paths = [f for p in args.data for f in glob.glob(p)]
-    data = load(paths)
+    train, val = load(paths, args.val)
     rng = np.random.default_rng(1)
-    rng.shuffle(data)
-    nval = max(1, int(len(data) * args.val))
-    val, train = data[:nval], data[nval:]
     print(f"{len(train)} training / {len(val)} validation positions on {device}")
 
     net = Net().to(device)
