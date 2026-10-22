@@ -6,7 +6,7 @@ tests compare committed versions; "WORKTREE" means the current files instead.
 From Git Bash (first `export MSYS_NO_PATHCONV=1 PYTHONIOENCODING=utf-8`):
   modal run scripts/modal_cpu.py::selfplay --a WORKTREE --b b5a0812 --games 3000 --cores 32
   modal run scripts/modal_cpu.py::match --ref b5a0812 --elo 3190 --games 400 --cores 32
-  modal run scripts/modal_cpu.py::datagen --ref b5a0812 --minutes 60 --cores 32
+  modal run --detach scripts/modal_cpu.py::datagen --ref b5a0812 --minutes 60 --cores 32 --jobs 2
   modal run scripts/modal_cpu.py::speed --ref WORKTREE --cores 8        # cheap benchmark
 Cost: Modal bills physical cores, about $0.047 per core-hour (October 2026): 32 cores ~ $1.50/h.
 """
@@ -99,17 +99,20 @@ def run_match(src: bytes, elo: int, games: int, tc: str, conc: int) -> str:
 
 
 @app.function(image=image, timeout=8 * 3600, volumes={"/data": volume})
-def run_datagen(src: bytes, minutes: float, nodes: int, workers: int, outdir: str) -> str:
+def run_datagen(job: int, src: bytes, minutes: float, nodes: int, workers: int, outdir: str) -> str:
     e = build(src, "/w/a")
     os.makedirs(f"/data/{outdir}", exist_ok=True)
-    base = int(time.time())
-    procs = [subprocess.Popen(["timeout", f"{int(minutes * 60)}s", e, "datagen", f"/data/{outdir}/m{base}_{i}.bin",
-                               str(base * 1000 + i), str(nodes)], stdout=subprocess.DEVNULL) for i in range(workers)]
-    for p in procs:
-        p.wait()
+    base = int(time.time()) * 100 + job  # distinct seeds and file names per job
+    files = [f"/data/{outdir}/m{base}_{i}.bin" for i in range(workers)]
+    procs = [subprocess.Popen(["timeout", f"{int(minutes * 60)}s", e, "datagen", f, str(base * 1000 + i), str(nodes)],
+                              stdout=subprocess.DEVNULL) for i, f in enumerate(files)]
+    while any(p.poll() is None for p in procs):
+        time.sleep(30)
+        if int(time.time()) % 600 < 30:
+            volume.commit()  # keep what is done so far if the container dies
     volume.commit()
-    total = sum(os.path.getsize(f"/data/{outdir}/m{base}_{i}.bin") // 32 for i in range(workers))
-    return f"{total} positions from {workers} workers in {minutes} min -> {total / minutes * 60 / 1e6:.2f}M/h"
+    total = sum(os.path.getsize(f) // 32 for f in files)
+    return f"job {job}: {total} positions from {workers} workers in {minutes} min -> {total / minutes * 60 / 1e6:.2f}M/h"
 
 
 @app.function(image=image, timeout=3600)
@@ -137,8 +140,12 @@ def match(ref: str = "HEAD", elo: int = 3190, games: int = 400, tc: str = "10+0.
 
 
 @app.local_entrypoint()
-def datagen(ref: str = "HEAD", minutes: float = 60, nodes: int = 5000, cores: int = 32, outdir: str = "nnue"):
-    print(run_datagen.with_options(cpu=cores).remote(source_tar(ref), minutes, nodes, cores, outdir))
+def datagen(ref: str = "HEAD", minutes: float = 60, nodes: int = 5000, cores: int = 32, jobs: int = 1,
+            outdir: str = "nnue"):
+    src = source_tar(ref)
+    fn = run_datagen.with_options(cpu=cores)
+    for line in fn.starmap([(j, src, minutes, nodes, cores, outdir) for j in range(jobs)]):
+        print(line, flush=True)
 
 
 @app.local_entrypoint()
