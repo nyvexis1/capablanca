@@ -6,6 +6,7 @@
 // pruning, reduced less, and material-losing ones get an extension so the search can
 // verify whether the attack actually wins.
 #include "engine.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>

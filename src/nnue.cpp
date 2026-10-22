@@ -14,7 +14,12 @@
 // The default network is compiled into the executable (build.sh passes NNUE_EMBED when
 // nets/default.nnue exists), so the engine is a single file.
 #ifdef NNUE_EMBED
-asm(".section .rdata,\"dr\"\n"
+#ifdef _WIN32
+#define NNUE_SECTION ".section .rdata,\"dr\"\n"
+#else
+#define NNUE_SECTION ".section .rodata\n"
+#endif
+asm(NNUE_SECTION
     ".balign 64\n"
     ".globl capablanca_net\n"
     "capablanca_net:\n"
