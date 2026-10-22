@@ -58,7 +58,8 @@ def build(tar: bytes, where: str) -> str:
     exe = os.path.join(where, "capablanca")
     srcs = sorted(os.path.join("src", s) for s in os.listdir(os.path.join(where, "src")) if s.endswith(".cpp"))
     subprocess.run(["g++", '-DNNUE_EMBED="nets/default.nnue"', "-O3", "-march=native", "-flto=auto", "-std=c++20",
-                    "-pthread", "-DNDEBUG", *srcs, "-o", exe], cwd=where, check=True)
+                    "-pthread", "-DNDEBUG", "-include", "algorithm",  # older refs relied on MinGW's implicit include
+                    *srcs, "-o", exe], cwd=where, check=True)
     print(subprocess.run([exe, "bench"], capture_output=True, text=True).stdout.strip().splitlines()[-1], flush=True)
     return exe
 
