@@ -23,7 +23,7 @@ SCALE = 400  # centipawns per sigmoid unit, must match src/nnue.cpp
 QA, QB = 255, 64  # quantisation, must match src/nnue.cpp
 
 REC = np.dtype([("occ", "<u8"), ("pcs", "u1", 16), ("stm", "u1"), ("half", "u1"),
-                ("full", "<u2"), ("score", "<i2"), ("result", "u1"), ("pad", "u1")])
+                ("move", "<u2"), ("score", "<i2"), ("result", "u1"), ("format", "u1")])  # move: fullmove in format 0
 assert REC.itemsize == 32
 
 
@@ -106,6 +106,7 @@ def export(net, path):
 
 
 def main():
+    global HIDDEN
     ap = argparse.ArgumentParser()
     ap.add_argument("data", nargs="+")
     ap.add_argument("--out", default="nets/capablanca.nnue")
@@ -114,7 +115,9 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--lam", type=float, default=0.75)
     ap.add_argument("--val", type=float, default=0.01, help="fraction held out for validation")
+    ap.add_argument("--hidden", type=int, default=HIDDEN, help="feature transformer width (engine: -DNNUE_HIDDEN)")
     args = ap.parse_args()
+    HIDDEN = args.hidden
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     paths = [f for p in args.data for f in glob.glob(p)]

@@ -402,7 +402,20 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         bool kingStrike = attack && (givesCheck || attacks_king_zone(pos, m));
         bool svPrune = Style.sacrificeVision & SV_PRUNE, svLmr = Style.sacrificeVision & SV_LMR;
         int see = (quiet && !kingStrike && !givesCheck) ? 0 : pos.see(m);
-        bool attackingSac = kingStrike && see < -50;
+        bool attackingSac = kingStrike && see < -50, soundSac = false;
+
+        // ---- Sacrifice verification: a half-depth null-window probe tells sound sacrifices
+        // (extended below) from refuted ones (searched like any other losing move) ----
+        if (attackingSac && (Style.sacrificeVision & SV_VERIFY) && depth >= 5 && std::abs(alpha) < MATE_BOUND) {
+            stack[ply].move = m;
+            stack[ply].piece = pos.board[from_sq(m)];
+            keyStack.push_back(pos.key);
+            int v = -search(child, -alpha - 1, -alpha, depth / 2, ply + 1, true);
+            keyStack.pop_back();
+            if (stopFlag) return 0;
+            if (v > alpha) soundSac = true;
+            else attackingSac = kingStrike = false;
+        }
 
         // ---- Pruning (never for attacking sacrifices: that is where brilliancies hide) ----
         if (!root && bestScore > -MATE_BOUND && pos.non_pawn_material(pos.stm) && !(svPrune && attackingSac)) {
@@ -430,7 +443,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
                 else if (sBeta >= beta) return sBeta; // multi-cut
             }
             if (!ext && givesCheck && (see >= 0 || (kingStrike && (Style.sacrificeVision & SV_CHECKEXT)))) ext = 1;
-            if (!ext && attackingSac && (Style.sacrificeVision & SV_EXT) && depth <= 10) ext = 1; // verify the sacrifice deeper
+            if (!ext && attackingSac && (soundSac || ((Style.sacrificeVision & SV_EXT) && depth <= 10))) ext = 1; // verify the sacrifice deeper
         }
         int newDepth = depth - 1 + ext;
 

@@ -22,17 +22,19 @@ volume = modal.Volume.from_name("capablanca-data", create_if_missing=True)
 
 
 @app.function(gpu="H100", image=image, volumes={"/data": volume}, timeout=8 * 3600, memory=65536)
-def train(epochs: int, batch: int, lr: float, lam: float, out: str):
+def train(epochs: int, batch: int, lr: float, lam: float, out: str, data: str, hidden: int):
     import subprocess
 
     subprocess.run(
-        ["python", "/root/train.py", "/data/nnue/*.bin", "--out", f"/data/{out}",
-         "--epochs", str(epochs), "--batch", str(batch), "--lr", str(lr), "--lam", str(lam)],
+        ["python", "/root/train.py", *[f"/data/{d}/*.bin" for d in data.split(",")], "--out", f"/data/{out}",
+         "--epochs", str(epochs), "--batch", str(batch), "--lr", str(lr), "--lam", str(lam), "--hidden", str(hidden)],
         check=True,
     )
     volume.commit()
 
 
 @app.local_entrypoint()
-def main(epochs: int = 30, batch: int = 16384, lr: float = 1e-3, lam: float = 0.75, out: str = "capablanca.nnue"):
-    train.remote(epochs, batch, lr, lam, out)
+def main(epochs: int = 30, batch: int = 16384, lr: float = 1e-3, lam: float = 1.0, out: str = "capablanca.nnue",
+         data: str = "nnue", hidden: int = 256, gpu: str = "H100"):
+    # data: comma-separated volume folders; gpu: e.g. L4 (cheaper) or H100
+    train.with_options(gpu=gpu).remote(epochs, batch, lr, lam, out, data, hidden)

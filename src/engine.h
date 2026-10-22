@@ -14,7 +14,7 @@ struct StyleConfig {
     int aggression = 125;   // % weight of OUR attack on the enemy king
     int defense = 100;      // % weight of the enemy attack on our king
     int contempt = 15;      // cp; draws count as this much worse for us
-    int sacrificeVision = 31; // bitmask of SV_* features below
+    int sacrificeVision = 63; // bitmask of SV_* features below
 };
 // Sacrifice-vision feature bits (each one tested separately)
 enum : int {
@@ -23,6 +23,7 @@ enum : int {
     SV_LMR = 4,       // reduce king strikes/sacrifices less
     SV_EXT = 8,       // extend material-losing king strikes
     SV_CHECKEXT = 16, // extend every check, even losing ones
+    SV_VERIFY = 32,   // probe sacrifices at half depth: sound ones are extended, refuted ones lose the bonuses
 };
 extern StyleConfig Style;
 extern Color EngineColor;
@@ -67,7 +68,7 @@ void search_start(const Position& pos, const std::vector<Key>& history, const Se
 void search_stop();
 void search_wait();
 int search_sync(const Position& pos, const std::vector<Key>& history, const SearchLimits& limits, Move& best);
-void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes);
+void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes, int aggression = 100);
 void bench(int depth);
 // Thread-safe line output (search thread and UCI thread share stdout)
 void sync_out(const std::string& line);

@@ -9,10 +9,10 @@
 //                            low nibble first: piece type (0 pawn .. 5 king) | 8 if black
 //   u8  stm                  0 white, 1 black
 //   u8  halfmove clock
-//   u16 fullmove number
+//   u16 best move            the move played (format 1); fullmove number in format 0
 //   i16 score                search score, white's point of view, centipawns
 //   u8  result               0 black won, 1 draw, 2 white won
-//   u8  unused
+//   u8  format               1 = the field above holds the best move, 0 = older files
 #include "engine.h"
 #include <algorithm>
 #include <cstdlib>
@@ -33,15 +33,15 @@ struct Record {
     uint8_t pieces[16];
     uint8_t stm;
     uint8_t halfmove;
-    uint16_t fullmove;
+    uint16_t move;
     int16_t score;
     uint8_t result;
-    uint8_t unused;
+    uint8_t format;
 };
 #pragma pack(pop)
 static_assert(sizeof(Record) == 32);
 
-Record pack(const Position& pos, int whiteScore) {
+Record pack(const Position& pos, int whiteScore, Move best) {
     Record r{};
     r.occ = pos.all;
     int i = 0;
@@ -54,7 +54,8 @@ Record pack(const Position& pos, int whiteScore) {
     }
     r.stm = uint8_t(pos.stm);
     r.halfmove = uint8_t(std::min(pos.halfmove, 255));
-    r.fullmove = uint16_t(pos.fullmove);
+    r.move = best; // quiet moves only: the policy experiment learns to order what history ranks badly
+    r.format = 1;
     r.score = int16_t(std::clamp(whiteScore, -32000, 32000));
     return r;
 }
@@ -67,13 +68,15 @@ bool is_repetition(const Position& pos, const std::vector<Key>& history) {
 
 } // namespace
 
-void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes) {
+void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes, int aggression) {
 #ifdef _WIN32
     // Lowest priority: everything else on the machine (video, browser, ...) goes first.
     SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS);
 #endif
-    // Neutral evaluation for training data: no style asymmetry or contempt.
-    Style.aggression = Style.defense = 100;
+    // Training data has no contempt; aggression is 100 (neutral) unless a run asks for a
+    // network that has the attacking style in its own evaluation.
+    Style.aggression = aggression;
+    Style.defense = 100;
     Style.contempt = 0;
     tt_resize(16);
 
@@ -136,7 +139,7 @@ void datagen(const std::string& outFile, uint64_t seed, uint64_t nodes) {
             if (drawPlies >= 12 || ply >= 400) { result = 1; break; }
 
             if (!pos.in_check() && !is_tactical(best) && std::abs(score) < MATE_BOUND)
-                recs.push_back(pack(pos, white));
+                recs.push_back(pack(pos, white, best));
 
             history.push_back(pos.key);
             pos.make(best);

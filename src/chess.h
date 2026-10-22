@@ -94,7 +94,10 @@ enum : int { WK = 1, WQ = 2, BK = 4, BQ = 8 };
 
 // NNUE accumulator support (weights live in nnue.cpp). Positions keep their accumulators up to
 // date in put_piece/remove_piece whenever a network is loaded.
-constexpr int NNUE_H = 256;
+#ifndef NNUE_HIDDEN
+#define NNUE_HIDDEN 256 // build with -DNNUE_HIDDEN=512 for a wider net (the file must match)
+#endif
+constexpr int NNUE_H = NNUE_HIDDEN;
 namespace Nnue {
 extern const int16_t* W0;   // [768][NNUE_H], null when no network is loaded
 extern const int16_t* B0;   // [NNUE_H]

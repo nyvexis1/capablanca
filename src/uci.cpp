@@ -106,8 +106,9 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 2 && std::string(argv[1]) == "datagen") {
-        // capablanca datagen <out.bin> [seed] [nodes per move]
-        datagen(argv[2], argc > 3 ? std::stoull(argv[3]) : 1, argc > 4 ? std::stoull(argv[4]) : 5000);
+        // capablanca datagen <out.bin> [seed] [nodes per move] [aggression]
+        datagen(argv[2], argc > 3 ? std::stoull(argv[3]) : 1, argc > 4 ? std::stoull(argv[4]) : 5000,
+                argc > 5 ? std::stoi(argv[5]) : 100);
         return 0;
     }
     if (argc > 1 && std::string(argv[1]) == "bench") {
@@ -129,7 +130,7 @@ int main(int argc, char** argv) {
                       << "option name Aggression type spin default " << Style.aggression << " min 0 max 300\n"
                       << "option name Defense type spin default " << Style.defense << " min 0 max 300\n"
                       << "option name Contempt type spin default " << Style.contempt << " min -100 max 100\n"
-                      << "option name SacrificeVision type spin default " << Style.sacrificeVision << " min 0 max 31\n"
+                      << "option name SacrificeVision type spin default " << Style.sacrificeVision << " min 0 max 63\n"
                       << "option name UseNNUE type check default true\n"
                       << "option name EvalFile type string default capablanca.nnue\n"
                       << "uciok" << std::endl;
