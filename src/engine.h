@@ -64,6 +64,7 @@ struct SearchLimits {
 
 void tt_resize(size_t mb);
 void new_game();
+void set_threads(int n); // Lazy SMP search threads (UCI option Threads)
 void search_start(const Position& pos, const std::vector<Key>& history, const SearchLimits& limits);
 void search_stop();
 void search_wait();

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -66,38 +67,62 @@ struct StackEntry {
     Move excluded = MOVE_NONE;
 };
 
-StackEntry stack[MAX_PLY + 8];
-int history[2][64][64];
-// Continuation history: [previous piece][previous to][piece][to]
-int16_t contHist[12][64][12][64];
-Move counterMoves[12][64];
-Move pvTable[MAX_PLY + 1][MAX_PLY + 1];
-int pvLength[MAX_PLY + 1];
+// Everything one search thread owns. Lazy SMP: all threads search the same root and share
+// only the transposition table; their different timing makes them explore different lines.
+struct ThreadData {
+    StackEntry stack[MAX_PLY + 8];
+    int history[2][64][64];
+    // Continuation history: [previous piece][previous to][piece][to]
+    int16_t contHist[12][64][12][64];
+    Move counterMoves[12][64];
+    Move pvTable[MAX_PLY + 1][MAX_PLY + 1];
+    int pvLength[MAX_PLY + 1];
+    std::vector<Key> keyStack;
+    uint64_t nodes = 0;
+    int selDepth = 0;
+    int rootDepth = 0;
+    Move rootBest = MOVE_NONE;
+    int nmpMinPly = 0; // null move is off below this ply while a verification search runs
+    void clear() {
+        memset(history, 0, sizeof(history));
+        memset(counterMoves, 0, sizeof(counterMoves));
+        memset(contHist, 0, sizeof(contHist));
+    }
+};
+std::vector<std::unique_ptr<ThreadData>> threads; // threads[0] is the main thread
+std::vector<std::thread> helpers;
 int lmrTable[64][64];
 
-std::vector<Key> keyStack;
 std::atomic<bool> stopFlag{false};
 std::atomic<bool> searching{false};
 std::thread searchThread;
-uint64_t nodes = 0;
-int selDepth = 0;
-int rootDepth = 0;
-Move rootBest = MOVE_NONE;
 SearchLimits limits;
 std::chrono::steady_clock::time_point startTime;
 int64_t softLimit = 0, hardLimit = 0;
 bool silent = false;
 int lastScore = 0;  // score and best move of the most recent iterate() (for search_sync)
 Move lastBest = MOVE_NONE;
-int nmpMinPly = 0; // null move is off below this ply while a verification search runs
+
+// The thread that starts a search runs it as threads[0], created on first use.
+// Search functions get their ThreadData passed in (thread_local is slow with MinGW).
+ThreadData* main_thread() {
+    if (threads.empty()) threads.push_back(std::make_unique<ThreadData>());
+    return threads[0].get();
+}
+
+uint64_t total_nodes() {
+    uint64_t n = 0;
+    for (auto& t : threads) n += t->nodes;
+    return n;
+}
 
 int64_t elapsed_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
 }
 
-void check_time() {
-    if ((nodes & 1023) != 0 || rootDepth <= 1) return;
-    if (limits.nodes && nodes >= limits.nodes) stopFlag = true;
+void check_time(ThreadData* td) {
+    if ((td->nodes & 1023) != 0 || td->rootDepth <= 1) return;
+    if (limits.nodes && td == threads[0].get() && td->nodes >= limits.nodes) stopFlag = true;
     if (hardLimit > 0 && elapsed_ms() >= hardLimit) stopFlag = true;
 }
 
@@ -118,10 +143,10 @@ int draw_score(const Position& pos) {
     return pos.stm == EngineColor ? -Style.contempt : Style.contempt;
 }
 
-bool is_repetition(const Position& pos) {
-    int n = int(keyStack.size());
+bool is_repetition(ThreadData* td, const Position& pos) {
+    int n = int(td->keyStack.size());
     for (int i = 2; i <= pos.halfmove && i <= n; i += 2)
-        if (keyStack[n - i] == pos.key) return true;
+        if (td->keyStack[n - i] == pos.key) return true;
     return false;
 }
 
@@ -162,34 +187,34 @@ bool real_attack(const Position& pos) {
     return attackers >= 3 || popcount(shield) <= 1;
 }
 
-int16_t* cont_entry(int ply, int back) {
+int16_t* cont_entry(ThreadData* td, int ply, int back) {
     if (ply < back) return nullptr;
-    const StackEntry& e = stack[ply - back];
+    const StackEntry& e = td->stack[ply - back];
     if (e.move == MOVE_NONE || e.move == NULL_MOVE || e.piece == EMPTY) return nullptr;
-    return &contHist[e.piece][to_sq(e.move)][0][0];
+    return &td->contHist[e.piece][to_sq(e.move)][0][0];
 }
 
-int quiet_history(const Position& pos, Move m, int ply) {
+int quiet_history(ThreadData* td, const Position& pos, Move m, int ply) {
     int pc = pos.board[from_sq(m)], to = to_sq(m);
-    int h = history[pos.stm][from_sq(m)][to];
-    if (int16_t* c1 = cont_entry(ply, 1)) h += c1[pc * 64 + to];
-    if (int16_t* c2 = cont_entry(ply, 2)) h += c2[pc * 64 + to];
+    int h = td->history[pos.stm][from_sq(m)][to];
+    if (int16_t* c1 = cont_entry(td, ply, 1)) h += c1[pc * 64 + to];
+    if (int16_t* c2 = cont_entry(td, ply, 2)) h += c2[pc * 64 + to];
     return h;
 }
 
-void update_cont(int ply, int pc, int to, int bonus) {
+void update_cont(ThreadData* td, int ply, int pc, int to, int bonus) {
     for (int back : {1, 2})
-        if (int16_t* c = cont_entry(ply, back)) {
+        if (int16_t* c = cont_entry(td, ply, back)) {
             int v = c[pc * 64 + to];
             v += bonus - v * std::abs(bonus) / 16384;
             c[pc * 64 + to] = int16_t(v);
         }
 }
 
-void score_moves(const Position& pos, MoveList& list, Move ttMove, int ply, bool attack = false) {
+void score_moves(ThreadData* td, const Position& pos, MoveList& list, Move ttMove, int ply, bool attack = false) {
     Move counter = MOVE_NONE;
-    if (ply > 0 && stack[ply - 1].move != MOVE_NONE && stack[ply - 1].move != NULL_MOVE)
-        counter = counterMoves[stack[ply - 1].piece][to_sq(stack[ply - 1].move)];
+    if (ply > 0 && td->stack[ply - 1].move != MOVE_NONE && td->stack[ply - 1].move != NULL_MOVE)
+        counter = td->counterMoves[td->stack[ply - 1].piece][to_sq(td->stack[ply - 1].move)];
     for (int i = 0; i < list.size; i++) {
         Move m = list.moves[i];
         int& sc = list.scores[i];
@@ -203,11 +228,11 @@ void score_moves(const Position& pos, MoveList& list, Move ttMove, int ply, bool
             if (pos.see_ge(m, 0)) sc = 2'000'000 + mvv;
             else if (attack && (Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc = 850'000 + mvv; // attacking sacrifice
             else sc = -1'000'000 + mvv;
-        } else if (m == stack[ply].killers[0]) sc = 900'000;
-        else if (m == stack[ply].killers[1]) sc = 890'000;
+        } else if (m == td->stack[ply].killers[0]) sc = 900'000;
+        else if (m == td->stack[ply].killers[1]) sc = 890'000;
         else if (m == counter) sc = 880'000;
         else {
-            sc = quiet_history(pos, m, ply);
+            sc = quiet_history(td, pos, m, ply);
             if (attack && (Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc += 1500;
         }
     }
@@ -222,13 +247,13 @@ Move pick_move(MoveList& list, int idx) {
     return list.moves[idx];
 }
 
-int qsearch(const Position& pos, int alpha, int beta, int ply, int qply = 0) {
-    nodes++;
-    check_time();
+int qsearch(ThreadData* td, const Position& pos, int alpha, int beta, int ply, int qply = 0) {
+    td->nodes++;
+    check_time(td);
     if (stopFlag) return 0;
-    if (ply > selDepth) selDepth = ply;
+    if (ply > td->selDepth) td->selDepth = ply;
     if (ply >= MAX_PLY) return evaluate(pos);
-    if (is_repetition(pos) || insufficient_material(pos)) return draw_score(pos);
+    if (is_repetition(td, pos) || insufficient_material(pos)) return draw_score(pos);
     if (pos.halfmove >= 100) return fifty_move_score(pos, ply);
 
     bool hit;
@@ -250,7 +275,7 @@ int qsearch(const Position& pos, int alpha, int beta, int ply, int qply = 0) {
 
     MoveList list;
     generate_moves(pos, list, !inCheck);
-    score_moves(pos, list, hit ? tte->move : MOVE_NONE, ply);
+    score_moves(td, pos, list, hit ? tte->move : MOVE_NONE, ply);
     int legal = 0;
     Move bestMove = MOVE_NONE;
     int oldAlpha = alpha;
@@ -269,9 +294,9 @@ int qsearch(const Position& pos, int alpha, int beta, int ply, int qply = 0) {
         if (!child.make(m)) continue;
         if (losing && !child.in_check()) continue;
         legal++;
-        keyStack.push_back(pos.key);
-        int score = -qsearch(child, -beta, -alpha, ply + 1, qply + 1);
-        keyStack.pop_back();
+        td->keyStack.push_back(pos.key);
+        int score = -qsearch(td, child, -beta, -alpha, ply + 1, qply + 1);
+        td->keyStack.pop_back();
         if (stopFlag) return 0;
         if (score > bestScore) {
             bestScore = score;
@@ -288,21 +313,21 @@ int qsearch(const Position& pos, int alpha, int beta, int ply, int qply = 0) {
     return bestScore;
 }
 
-int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cutNode) {
-    pvLength[ply] = ply;
-    if (depth <= 0) return qsearch(pos, alpha, beta, ply);
+int search(ThreadData* td, const Position& pos, int alpha, int beta, int depth, int ply, bool cutNode) {
+    td->pvLength[ply] = ply;
+    if (depth <= 0) return qsearch(td, pos, alpha, beta, ply);
 
-    nodes++;
-    check_time();
+    td->nodes++;
+    check_time(td);
     if (stopFlag) return 0;
-    if (ply > selDepth) selDepth = ply;
+    if (ply > td->selDepth) td->selDepth = ply;
 
     bool root = ply == 0;
     bool pvNode = beta - alpha > 1;
-    Move excluded = stack[ply].excluded;
+    Move excluded = td->stack[ply].excluded;
 
     if (!root) {
-        if (is_repetition(pos) || insufficient_material(pos)) return draw_score(pos);
+        if (is_repetition(td, pos) || insufficient_material(pos)) return draw_score(pos);
         if (pos.halfmove >= 100) return fifty_move_score(pos, ply);
         if (ply >= MAX_PLY) return evaluate(pos);
         alpha = std::max(alpha, -MATE + ply);
@@ -316,7 +341,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
     TTEntry* tte = tt_probe(pos.key, hit);
     if (excluded) hit = false;
     Move ttMove = hit ? tte->move : MOVE_NONE;
-    if (root && rootBest) ttMove = rootBest;
+    if (root && td->rootBest) ttMove = td->rootBest;
     int ttScore = hit ? score_from_tt(tte->score, ply) : 0;
     int ttDepth = hit ? tte->depth : -1;
     int ttBound = hit ? (tte->genBound & 3) : BOUND_NONE;
@@ -336,24 +361,24 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
     int eval = staticEval;
     if (!inCheck && hit && ((ttBound == BOUND_LOWER && ttScore > eval) || (ttBound == BOUND_UPPER && ttScore < eval)))
         eval = ttScore;
-    stack[ply].staticEval = staticEval;
-    bool improving = !inCheck && ply >= 2 && stack[ply - 2].staticEval != -INF && staticEval > stack[ply - 2].staticEval;
-    stack[ply + 1].killers[0] = stack[ply + 1].killers[1] = MOVE_NONE;
+    td->stack[ply].staticEval = staticEval;
+    bool improving = !inCheck && ply >= 2 && td->stack[ply - 2].staticEval != -INF && staticEval > td->stack[ply - 2].staticEval;
+    td->stack[ply + 1].killers[0] = td->stack[ply + 1].killers[1] = MOVE_NONE;
 
     if (!pvNode && !inCheck && !excluded) {
         // Reverse futility pruning
         if (depth <= 7 && eval - 75 * (depth - improving) >= beta && std::abs(eval) < MATE_BOUND) return eval;
         // Null move pruning
-        if (depth >= 3 && eval >= beta && ply > 0 && ply >= nmpMinPly && stack[ply - 1].move != NULL_MOVE &&
+        if (depth >= 3 && eval >= beta && ply > 0 && ply >= td->nmpMinPly && td->stack[ply - 1].move != NULL_MOVE &&
             pos.non_pawn_material(pos.stm) && beta > -MATE_BOUND) {
             int R = 3 + depth / 4 + std::min(3, (eval - beta) / 200);
             Position child = pos;
             child.make_null();
-            stack[ply].move = NULL_MOVE;
-            stack[ply].piece = EMPTY;
-            keyStack.push_back(pos.key);
-            int score = -search(child, -beta, -beta + 1, depth - R, ply + 1, !cutNode);
-            keyStack.pop_back();
+            td->stack[ply].move = NULL_MOVE;
+            td->stack[ply].piece = EMPTY;
+            td->keyStack.push_back(pos.key);
+            int score = -search(td, child, -beta, -beta + 1, depth - R, ply + 1, !cutNode);
+            td->keyStack.pop_back();
             if (stopFlag) return 0;
             if (score >= beta) {
                 if (score >= MATE_BOUND) score = beta;
@@ -361,17 +386,17 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
                 // cutoff is expensive: confirm with a normal search that has null move off.
                 Bitboard pieces = pos.occ[pos.stm] & ~pos.pieces[pos.stm][PAWN] & ~pos.pieces[pos.stm][KING];
                 if (more_than_one(pieces) && depth < 12) return score;
-                int savedMinPly = nmpMinPly;
-                nmpMinPly = ply + 3 * (depth - R) / 4;
-                int v = search(pos, beta - 1, beta, depth - R, ply, false);
-                nmpMinPly = savedMinPly;
+                int savedMinPly = td->nmpMinPly;
+                td->nmpMinPly = ply + 3 * (depth - R) / 4;
+                int v = search(td, pos, beta - 1, beta, depth - R, ply, false);
+                td->nmpMinPly = savedMinPly;
                 if (stopFlag) return 0;
                 if (v >= beta) return score;
             }
         }
         // Razoring
         if (depth <= 3 && eval + 250 * depth < alpha) {
-            int score = qsearch(pos, alpha, alpha + 1, ply);
+            int score = qsearch(td, pos, alpha, alpha + 1, ply);
             if (score <= alpha) return score;
         }
     }
@@ -382,7 +407,7 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
     MoveList list;
     generate_moves(pos, list, false);
     bool attack = Style.sacrificeVision && !inCheck && real_attack(pos);
-    score_moves(pos, list, ttMove, ply, attack);
+    score_moves(td, pos, list, ttMove, ply, attack);
 
     int bestScore = -INF, moveCount = 0;
     Move bestMove = MOVE_NONE;
@@ -407,11 +432,11 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         // ---- Sacrifice verification: a half-depth null-window probe tells sound sacrifices
         // (extended below) from refuted ones (searched like any other losing move) ----
         if (attackingSac && (Style.sacrificeVision & SV_VERIFY) && depth >= 5 && std::abs(alpha) < MATE_BOUND) {
-            stack[ply].move = m;
-            stack[ply].piece = pos.board[from_sq(m)];
-            keyStack.push_back(pos.key);
-            int v = -search(child, -alpha - 1, -alpha, depth / 2, ply + 1, true);
-            keyStack.pop_back();
+            td->stack[ply].move = m;
+            td->stack[ply].piece = pos.board[from_sq(m)];
+            td->keyStack.push_back(pos.key);
+            int v = -search(td, child, -alpha - 1, -alpha, depth / 2, ply + 1, true);
+            td->keyStack.pop_back();
             if (stopFlag) return 0;
             if (v > alpha) soundSac = true;
             else attackingSac = kingStrike = false;
@@ -431,13 +456,13 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
 
         // ---- Extensions ----
         int ext = 0;
-        if (ply < 2 * rootDepth) {
+        if (ply < 2 * td->rootDepth) {
             if (!root && depth >= 8 && m == ttMove && !excluded && ttDepth >= depth - 3 &&
                 (ttBound & BOUND_LOWER) && std::abs(ttScore) < MATE_BOUND) {
                 int sBeta = ttScore - 2 * depth;
-                stack[ply].excluded = m;
-                int s = search(pos, sBeta - 1, sBeta, (depth - 1) / 2, ply, cutNode);
-                stack[ply].excluded = MOVE_NONE;
+                td->stack[ply].excluded = m;
+                int s = search(td, pos, sBeta - 1, sBeta, (depth - 1) / 2, ply, cutNode);
+                td->stack[ply].excluded = MOVE_NONE;
                 if (stopFlag) return 0;
                 if (s < sBeta) ext = 1;
                 else if (sBeta >= beta) return sBeta; // multi-cut
@@ -447,9 +472,9 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
         }
         int newDepth = depth - 1 + ext;
 
-        stack[ply].move = m;
-        stack[ply].piece = pos.board[from_sq(m)];
-        keyStack.push_back(pos.key);
+        td->stack[ply].move = m;
+        td->stack[ply].piece = pos.board[from_sq(m)];
+        td->keyStack.push_back(pos.key);
 
         int score;
         if (depth >= 3 && moveCount > 1 + (pvNode ? 1 : 0) && (quiet || see < 0)) {
@@ -457,23 +482,23 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
             r += cutNode;
             r += !improving;
             r -= pvNode;
-            if (m == stack[ply].killers[0] || m == stack[ply].killers[1]) r--;
-            if (quiet) r -= quiet_history(pos, m, ply) / 8000;
+            if (m == td->stack[ply].killers[0] || m == td->stack[ply].killers[1]) r--;
+            if (quiet) r -= quiet_history(td, pos, m, ply) / 8000;
             if (givesCheck) r--;
             if (svLmr && kingStrike) r--;      // keep attacking ideas alive
             if (svLmr && attackingSac) r -= 2; // and sacrifices even more so
             r = std::clamp(r, 0, newDepth - 1);
-            score = -search(child, -alpha - 1, -alpha, newDepth - r, ply + 1, true);
-            if (score > alpha && r > 0) score = -search(child, -alpha - 1, -alpha, newDepth, ply + 1, !cutNode);
+            score = -search(td, child, -alpha - 1, -alpha, newDepth - r, ply + 1, true);
+            if (score > alpha && r > 0) score = -search(td, child, -alpha - 1, -alpha, newDepth, ply + 1, !cutNode);
         } else if (!pvNode || moveCount > 1) {
-            score = -search(child, -alpha - 1, -alpha, newDepth, ply + 1, !cutNode);
+            score = -search(td, child, -alpha - 1, -alpha, newDepth, ply + 1, !cutNode);
         } else {
             score = alpha + 1; // force full window below
         }
         if (pvNode && (moveCount == 1 || score > alpha))
-            score = -search(child, -beta, -alpha, newDepth, ply + 1, false);
+            score = -search(td, child, -beta, -alpha, newDepth, ply + 1, false);
 
-        keyStack.pop_back();
+        td->keyStack.pop_back();
         if (stopFlag) return 0;
 
         if (quiet && quietCount < 64) quiets[quietCount++] = m;
@@ -482,10 +507,10 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
             if (score > alpha) {
                 bestMove = m;
                 alpha = score;
-                pvTable[ply][ply] = m;
-                for (int j = ply + 1; j < pvLength[ply + 1]; j++) pvTable[ply][j] = pvTable[ply + 1][j];
-                pvLength[ply] = std::max(pvLength[ply + 1], ply + 1);
-                if (root) rootBest = m;
+                td->pvTable[ply][ply] = m;
+                for (int j = ply + 1; j < td->pvLength[ply + 1]; j++) td->pvTable[ply][j] = td->pvTable[ply + 1][j];
+                td->pvLength[ply] = std::max(td->pvLength[ply + 1], ply + 1);
+                if (root) td->rootBest = m;
                 if (score >= beta) break;
             }
         }
@@ -497,17 +522,17 @@ int search(const Position& pos, int alpha, int beta, int depth, int ply, bool cu
     }
 
     if (bestScore >= beta && bestMove && !is_tactical(bestMove)) {
-        if (stack[ply].killers[0] != bestMove) {
-            stack[ply].killers[1] = stack[ply].killers[0];
-            stack[ply].killers[0] = bestMove;
+        if (td->stack[ply].killers[0] != bestMove) {
+            td->stack[ply].killers[1] = td->stack[ply].killers[0];
+            td->stack[ply].killers[0] = bestMove;
         }
-        if (ply > 0 && stack[ply - 1].move != MOVE_NONE && stack[ply - 1].move != NULL_MOVE)
-            counterMoves[stack[ply - 1].piece][to_sq(stack[ply - 1].move)] = bestMove;
+        if (ply > 0 && td->stack[ply - 1].move != MOVE_NONE && td->stack[ply - 1].move != NULL_MOVE)
+            td->counterMoves[td->stack[ply - 1].piece][to_sq(td->stack[ply - 1].move)] = bestMove;
         int bonus = std::min(depth * depth * 16, 1600);
         for (int j = 0; j < quietCount; j++) {
             Move q = quiets[j];
-            update_history(history[pos.stm][from_sq(q)][to_sq(q)], q == bestMove ? bonus : -bonus);
-            update_cont(ply, pos.board[from_sq(q)], to_sq(q), q == bestMove ? bonus : -bonus);
+            update_history(td->history[pos.stm][from_sq(q)][to_sq(q)], q == bestMove ? bonus : -bonus);
+            update_cont(td, ply, pos.board[from_sq(q)], to_sq(q), q == bestMove ? bonus : -bonus);
         }
     }
 
@@ -541,12 +566,21 @@ void compute_time(Color us) {
     softLimit = std::min(softLimit, hardLimit);
 }
 
-void iterate(Position pos) {
-    nodes = 0;
-    rootBest = MOVE_NONE;
-    ttGen++;
-    for (auto& s : stack) s = StackEntry();
-    for (auto& side : history)
+void iterate(Position pos, ThreadData* self) {
+    ThreadData* const td = self;
+    bool mainThread = self == threads[0].get();
+    td->nodes = 0;
+    td->rootBest = MOVE_NONE;
+    if (mainThread) {
+        ttGen++;
+        for (size_t i = 1; i < threads.size(); i++) {
+            threads[i]->keyStack = td->keyStack;
+            threads[i]->nodes = 0;
+            helpers.emplace_back(iterate, pos, threads[i].get());
+        }
+    }
+    for (auto& s : td->stack) s = StackEntry();
+    for (auto& side : td->history)
         for (auto& f : side)
             for (int& h : f) h /= 2;
 
@@ -557,31 +591,36 @@ void iterate(Position pos) {
     Move prevBest = MOVE_NONE;
     int stability = 0;
 
-    for (rootDepth = 1; rootDepth <= limits.depth && legal.size; rootDepth++) {
-        selDepth = 0;
+    int index = 0;
+    while (threads[index].get() != self) index++;
+    int firstDepth = 1 + (index & 1);
+    for (td->rootDepth = firstDepth; td->rootDepth <= limits.depth && legal.size; td->rootDepth++) {
+        td->selDepth = 0;
         int alpha = -INF, beta = INF, window = 25;
-        if (rootDepth >= 5) {
+        if (td->rootDepth >= 5) {
             alpha = std::max(-INF, prevScore - window);
             beta = std::min(INF, prevScore + window);
         }
         while (true) {
-            score = search(pos, alpha, beta, rootDepth, 0, false);
+            score = search(td, pos, alpha, beta, td->rootDepth, 0, false);
             if (stopFlag) break;
             if (score <= alpha) { beta = (alpha + beta) / 2; alpha = std::max(-INF, score - window); }
             else if (score >= beta) { beta = std::min(INF, score + window); }
             else break;
             window += window / 2 + 5;
         }
-        if (stopFlag && rootDepth > 1) break;
-        best = rootBest ? rootBest : best;
+        if (stopFlag && td->rootDepth > 1) break;
+        best = td->rootBest ? td->rootBest : best;
         prevScore = score;
 
+        if (!mainThread) continue; // helpers just keep deepening until the main thread stops them
         if (!silent) {
             int64_t ms = elapsed_ms();
-            std::string info = "info depth " + std::to_string(rootDepth) + " seldepth " + std::to_string(selDepth) +
-                               " score " + score_string(score) + " nodes " + std::to_string(nodes) + " nps " +
-                               std::to_string(ms > 0 ? nodes * 1000 / ms : nodes) + " time " + std::to_string(ms) + " pv";
-            for (int j = 0; j < pvLength[0]; j++) info += " " + move_to_uci(pvTable[0][j]);
+            uint64_t n = total_nodes();
+            std::string info = "info depth " + std::to_string(td->rootDepth) + " seldepth " + std::to_string(td->selDepth) +
+                               " score " + score_string(score) + " nodes " + std::to_string(n) + " nps " +
+                               std::to_string(ms > 0 ? n * 1000 / ms : n) + " time " + std::to_string(ms) + " pv";
+            for (int j = 0; j < td->pvLength[0]; j++) info += " " + move_to_uci(td->pvTable[0][j]);
             sync_out(info);
         }
 
@@ -592,12 +631,16 @@ void iterate(Position pos) {
             int64_t adj = softLimit * (14 - stability) / 10;
             if (elapsed_ms() >= std::min(adj, hardLimit)) break;
         }
-        if (std::abs(score) >= MATE_BOUND && rootDepth > 10 && softLimit > 0) break;
+        if (std::abs(score) >= MATE_BOUND && td->rootDepth > 10 && softLimit > 0) break;
     }
 
+    if (!mainThread) return;
     lastScore = prevScore;
     lastBest = best;
     while (limits.infinite && !stopFlag) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    stopFlag = true; // ends the helpers' searches
+    for (auto& h : helpers) h.join();
+    helpers.clear();
     if (!silent) sync_out("bestmove " + move_to_uci(best));
 }
 
@@ -618,13 +661,23 @@ void tt_resize(size_t mb) {
 }
 
 void new_game() {
+    main_thread();
     std::fill(TT.begin(), TT.end(), TTEntry{});
-    memset(history, 0, sizeof(history));
-    memset(counterMoves, 0, sizeof(counterMoves));
-    memset(contHist, 0, sizeof(contHist));
+    for (auto& t : threads) t->clear();
     for (int d = 0; d < 64; d++)
         for (int m = 0; m < 64; m++)
             lmrTable[d][m] = (d && m) ? int(0.75 + std::log(d) * std::log(m) / 2.25) : 0;
+}
+
+void set_threads(int n) {
+    search_stop();
+    main_thread();
+    n = std::clamp(n, 1, 256);
+    while (int(threads.size()) > n) threads.pop_back();
+    while (int(threads.size()) < n) {
+        threads.push_back(std::make_unique<ThreadData>());
+        threads.back()->clear();
+    }
 }
 
 void search_wait() {
@@ -636,11 +689,11 @@ void search_stop() {
     search_wait();
 }
 
-void search_start(const Position& pos, const std::vector<Key>& history, const SearchLimits& lim) {
+void search_start(const Position& pos, const std::vector<Key>& hist, const SearchLimits& lim) {
     search_stop();
     stopFlag = false;
     limits = lim;
-    keyStack = history;
+    main_thread()->keyStack = hist;
     static int lastPerspective = -1;
     int perspective = pos.stm | (Style.aggression << 1) | (Style.defense << 10) | (Style.contempt + 128) << 19;
     if (perspective != lastPerspective) std::fill(TT.begin(), TT.end(), TTEntry{});
@@ -648,32 +701,33 @@ void search_start(const Position& pos, const std::vector<Key>& history, const Se
     EngineColor = pos.stm;
     startTime = std::chrono::steady_clock::now();
     compute_time(pos.stm);
-    searchThread = std::thread(iterate, pos);
+    searchThread = std::thread(iterate, pos, threads[0].get());
 }
 
 // Quiescence score of a position from the side to move's view (used by the tuner's quiet filter).
 // Clears the TT first: its key ignores the halfmove clock, which the evaluation depends on,
 // so cached entries from another sample could otherwise leak into this one.
 int qsearch_score(const Position& pos) {
+    ThreadData* const td = main_thread();
     std::fill(TT.begin(), TT.end(), TTEntry{});
     stopFlag = false;
     limits = SearchLimits{};
-    rootDepth = 0;
+    td->rootDepth = 0;
     hardLimit = 0;
-    keyStack.clear();
-    return qsearch(pos, -INF, INF, 0);
+    td->keyStack.clear();
+    return qsearch(td, pos, -INF, INF, 0);
 }
 
 // Search on the calling thread without printing; returns the score (side to move's view).
-int search_sync(const Position& pos, const std::vector<Key>& history, const SearchLimits& lim, Move& best) {
+int search_sync(const Position& pos, const std::vector<Key>& hist, const SearchLimits& lim, Move& best) {
     silent = true;
     stopFlag = false;
     limits = lim;
-    keyStack = history;
+    main_thread()->keyStack = hist;
     EngineColor = pos.stm;
     startTime = std::chrono::steady_clock::now();
     softLimit = hardLimit = 0;
-    iterate(pos);
+    iterate(pos, threads[0].get());
     silent = false;
     best = lastBest;
     return lastScore;
@@ -702,12 +756,12 @@ void bench(int depth) {
         stopFlag = false;
         limits = SearchLimits();
         limits.depth = depth;
-        keyStack.clear();
+        main_thread()->keyStack.clear();
         EngineColor = pos.stm;
         startTime = std::chrono::steady_clock::now();
         softLimit = hardLimit = 0;
-        iterate(pos);
-        total += nodes;
+        iterate(pos, threads[0].get());
+        total += total_nodes();
     }
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     silent = false;

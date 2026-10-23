@@ -66,6 +66,7 @@ void set_option(std::istringstream& is) {
     is >> value;
     for (auto& ch : name) ch = char(tolower(ch));
     if (name == "hash") tt_resize(std::max(1, std::stoi(value)));
+    else if (name == "threads") set_threads(std::stoi(value));
     else if (name == "aggression") Style.aggression = std::stoi(value);
     else if (name == "defense") Style.defense = std::stoi(value);
     else if (name == "contempt") Style.contempt = std::stoi(value);
@@ -127,7 +128,7 @@ int main(int argc, char** argv) {
             std::cout << "id name Capablanca 0.8 " << (NNUE_H >= 512 ? "Queen" : NNUE_H >= 256 ? "Rook" : "Knight") << "\n"
                       << "id author curko & Claude\n"
                       << "option name Hash type spin default 64 min 1 max 4096\n"
-                      << "option name Threads type spin default 1 min 1 max 1\n"
+                      << "option name Threads type spin default 1 min 1 max 256\n"
                       << "option name Aggression type spin default " << Style.aggression << " min 0 max 300\n"
                       << "option name Defense type spin default " << Style.defense << " min 0 max 300\n"
                       << "option name Contempt type spin default " << Style.contempt << " min -100 max 100\n"
