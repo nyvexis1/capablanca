@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
         is >> cmd;
         if (cmd == "uci") {
             // The network width names the edition: 256 Rook (default), 512 Queen
-            std::cout << "id name Capablanca 0.8 " << (NNUE_H >= 512 ? "Queen" : NNUE_H >= 256 ? "Rook" : "Knight") << "\n"
+            std::cout << "id name Capablanca 0.9 " << (NNUE_H >= 512 ? "Queen" : NNUE_H >= 256 ? "Rook" : "Knight") << "\n"
                       << "id author curko & Claude\n"
                       << "option name Hash type spin default 64 min 1 max 4096\n"
                       << "option name Threads type spin default 1 min 1 max 256\n"
