@@ -1,5 +1,3 @@
-![Capablanca](branding/banner.png)
-
 # Capablanca
 
 An attacking UCI chess engine written from scratch in C++20, with a neural network that taught itself by playing millions of games against itself. No Stockfish code and no Stockfish-labelled training data.
