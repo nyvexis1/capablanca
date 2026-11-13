@@ -75,6 +75,12 @@ struct ThreadData {
     // Continuation history: [previous piece][previous to][piece][to]
     int16_t contHist[12][64][12][64];
     Move counterMoves[12][64];
+    // Correction history: how far the search result usually lands from the static evaluation,
+    // remembered per pawn structure and per previous move (1/256 cp)
+    int16_t pawnCorr[2][16384];
+    int16_t contCorr[12][64];
+    // Capture history: [piece][to][captured type]
+    int16_t captHist[12][64][7];
     Move pvTable[MAX_PLY + 1][MAX_PLY + 1];
     int pvLength[MAX_PLY + 1];
     std::vector<Key> keyStack;
@@ -87,6 +93,9 @@ struct ThreadData {
         memset(history, 0, sizeof(history));
         memset(counterMoves, 0, sizeof(counterMoves));
         memset(contHist, 0, sizeof(contHist));
+        memset(pawnCorr, 0, sizeof(pawnCorr));
+        memset(contCorr, 0, sizeof(contCorr));
+        memset(captHist, 0, sizeof(captHist));
     }
 };
 std::vector<std::unique_ptr<ThreadData>> threads; // threads[0] is the main thread
@@ -211,6 +220,28 @@ void update_cont(ThreadData* td, int ply, int pc, int to, int bonus) {
         }
 }
 
+int16_t* cont_corr_entry(ThreadData* td, int ply) {
+    if (ply < 1) return nullptr;
+    const StackEntry& e = td->stack[ply - 1];
+    if (e.move == MOVE_NONE || e.move == NULL_MOVE || e.piece == EMPTY) return nullptr;
+    return &td->contCorr[e.piece][to_sq(e.move)];
+}
+
+// Static evaluation adjusted by what earlier searches of similar positions found.
+// ply < 0: pawn structure only (quiescence does not maintain the move stack).
+int corrected_eval(ThreadData* td, const Position& pos, int raw, int ply) {
+    int c = td->pawnCorr[pos.stm][pos.pawnKey & 16383];
+    if (ply >= 0)
+        if (int16_t* e = cont_corr_entry(td, ply)) c += *e;
+    return std::clamp(raw + c / 256, -MATE_BOUND + 1, MATE_BOUND - 1);
+}
+
+void update_corr(int16_t& e, int diff, int depth) {
+    int w = std::min(depth + 1, 16);
+    int v = (e * (256 - w) + std::clamp(diff, -256, 256) * 256 * w) / 256;
+    e = int16_t(std::clamp(v, -48 * 256, 48 * 256));
+}
+
 void score_moves(ThreadData* td, const Position& pos, MoveList& list, Move ttMove, int ply, bool attack = false) {
     Move counter = MOVE_NONE;
     if (ply > 0 && td->stack[ply - 1].move != MOVE_NONE && td->stack[ply - 1].move != NULL_MOVE)
@@ -224,7 +255,7 @@ void score_moves(ThreadData* td, const Position& pos, MoveList& list, Move ttMov
             int v = victim == NO_PIECE_TYPE ? 0 : MvvValue[victim];
             if (is_promotion(m)) v += 900;
             int attacker = type_of(pos.board[from_sq(m)]);
-            int mvv = v * 10 - MvvValue[attacker] / 10;
+            int mvv = v * 10 - MvvValue[attacker] / 10 + td->captHist[pos.board[from_sq(m)]][to_sq(m)][victim] / 8;
             if (pos.see_ge(m, 0)) sc = 2'000'000 + mvv;
             else if (attack && (Style.sacrificeVision & SV_ORDER) && attacks_king_zone(pos, m)) sc = 850'000 + mvv; // attacking sacrifice
             else sc = -1'000'000 + mvv;
@@ -265,9 +296,10 @@ int qsearch(ThreadData* td, const Position& pos, int alpha, int beta, int ply, i
     }
 
     bool inCheck = pos.in_check();
-    int standPat = -INF, bestScore = -INF;
+    int standPat = -INF, bestScore = -INF, rawEval = 0;
     if (!inCheck) {
-        standPat = hit ? tte->eval : evaluate(pos);
+        rawEval = hit ? tte->eval : evaluate(pos);
+        standPat = corrected_eval(td, pos, rawEval, -1);
         bestScore = standPat;
         if (standPat >= beta) return standPat;
         if (standPat > alpha) alpha = standPat;
@@ -309,7 +341,7 @@ int qsearch(ThreadData* td, const Position& pos, int alpha, int beta, int ply, i
     }
     if (inCheck && legal == 0) return -MATE + ply;
     Bound b = bestScore >= beta ? BOUND_LOWER : bestScore > oldAlpha ? BOUND_EXACT : BOUND_UPPER;
-    tt_store(tte, pos.key, bestScore, standPat == -INF ? 0 : standPat, bestMove, 0, b, ply);
+    tt_store(tte, pos.key, bestScore, rawEval, bestMove, 0, b, ply);
     return bestScore;
 }
 
@@ -352,11 +384,12 @@ int search(ThreadData* td, const Position& pos, int alpha, int beta, int depth, 
             return ttScore;
     }
 
-    int staticEval;
+    int staticEval, rawEval = 0; // the TT keeps the raw evaluation
     if (inCheck) staticEval = -INF;
     else {
-        staticEval = hit ? tte->eval : evaluate(pos);
-        if (!hit && !excluded) tt_store(tte, pos.key, 0, staticEval, MOVE_NONE, -1, BOUND_NONE, ply);
+        rawEval = hit ? tte->eval : evaluate(pos);
+        if (!hit && !excluded) tt_store(tte, pos.key, 0, rawEval, MOVE_NONE, -1, BOUND_NONE, ply);
+        staticEval = corrected_eval(td, pos, rawEval, ply);
     }
     int eval = staticEval;
     if (!inCheck && hit && ((ttBound == BOUND_LOWER && ttScore > eval) || (ttBound == BOUND_UPPER && ttScore < eval)))
@@ -399,6 +432,32 @@ int search(ThreadData* td, const Position& pos, int alpha, int beta, int depth, 
             int score = qsearch(td, pos, alpha, alpha + 1, ply);
             if (score <= alpha) return score;
         }
+        // ProbCut: a capture that still beats beta by a margin at reduced depth will
+        // almost surely beat beta at full depth too.
+        int probBeta = beta + 180 - 50 * improving;
+        if (depth >= 5 && std::abs(beta) < MATE_BOUND && !(hit && ttDepth >= depth - 3 && ttScore < probBeta)) {
+            MoveList caps;
+            generate_moves(pos, caps, true);
+            score_moves(td, pos, caps, ttMove && is_tactical(ttMove) ? ttMove : MOVE_NONE, ply);
+            for (int i = 0; i < caps.size; i++) {
+                Move m = pick_move(caps, i);
+                if (!is_tactical(m) || !pos.see_ge(m, probBeta - staticEval)) continue;
+                Position child = pos;
+                if (!child.make(m)) continue;
+                td->stack[ply].move = m;
+                td->stack[ply].piece = pos.board[from_sq(m)];
+                td->keyStack.push_back(pos.key);
+                int score = -qsearch(td, child, -probBeta, -probBeta + 1, ply + 1);
+                if (score >= probBeta)
+                    score = -search(td, child, -probBeta, -probBeta + 1, depth - 4, ply + 1, !cutNode);
+                td->keyStack.pop_back();
+                if (stopFlag) return 0;
+                if (score >= probBeta) {
+                    tt_store(tte, pos.key, score, rawEval, m, depth - 3, BOUND_LOWER, ply);
+                    return score;
+                }
+            }
+        }
     }
 
     // Internal iterative reduction
@@ -411,8 +470,8 @@ int search(ThreadData* td, const Position& pos, int alpha, int beta, int depth, 
 
     int bestScore = -INF, moveCount = 0;
     Move bestMove = MOVE_NONE;
-    Move quiets[64];
-    int quietCount = 0;
+    Move quiets[64], captures[32];
+    int quietCount = 0, captureCount = 0;
     int oldAlpha = alpha;
 
     for (int i = 0; i < list.size; i++) {
@@ -464,11 +523,13 @@ int search(ThreadData* td, const Position& pos, int alpha, int beta, int depth, 
                 int s = search(td, pos, sBeta - 1, sBeta, (depth - 1) / 2, ply, cutNode);
                 td->stack[ply].excluded = MOVE_NONE;
                 if (stopFlag) return 0;
-                if (s < sBeta) ext = 1;
+                if (s < sBeta) ext = (!pvNode && s < sBeta - 20) ? 2 : 1; // far better than the rest: two plies
                 else if (sBeta >= beta) return sBeta; // multi-cut
+                else if (ttScore >= beta) ext = -2;   // not singular and another move may cut too
+                else if (cutNode) ext = -1;
             }
-            if (!ext && givesCheck && (see >= 0 || (kingStrike && (Style.sacrificeVision & SV_CHECKEXT)))) ext = 1;
-            if (!ext && attackingSac && (soundSac || ((Style.sacrificeVision & SV_EXT) && depth <= 10))) ext = 1; // verify the sacrifice deeper
+            if (ext == 0 && givesCheck && (see >= 0 || (kingStrike && (Style.sacrificeVision & SV_CHECKEXT)))) ext = 1;
+            if (ext == 0 && attackingSac && (soundSac || ((Style.sacrificeVision & SV_EXT) && depth <= 10))) ext = 1; // verify the sacrifice deeper
         }
         int newDepth = depth - 1 + ext;
 
@@ -502,6 +563,7 @@ int search(ThreadData* td, const Position& pos, int alpha, int beta, int depth, 
         if (stopFlag) return 0;
 
         if (quiet && quietCount < 64) quiets[quietCount++] = m;
+        if (!quiet && captureCount < 32) captures[captureCount++] = m;
         if (score > bestScore) {
             bestScore = score;
             if (score > alpha) {
@@ -536,9 +598,26 @@ int search(ThreadData* td, const Position& pos, int alpha, int beta, int depth, 
         }
     }
 
+    if (bestScore >= beta && bestMove) { // the capture that cut off is good, the ones tried before it are not
+        int bonus = std::min(depth * depth * 16, 1600);
+        for (int j = 0; j < captureCount; j++) {
+            Move c = captures[j];
+            int16_t& e = td->captHist[pos.board[from_sq(c)]][to_sq(c)][pos.captured_type(c)];
+            int b = c == bestMove ? bonus : -bonus;
+            e = int16_t(e + b - e * std::abs(b) / 16384);
+        }
+    }
+
     if (!excluded) {
         Bound b = bestScore >= beta ? BOUND_LOWER : (pvNode && bestScore > oldAlpha) ? BOUND_EXACT : BOUND_UPPER;
-        tt_store(tte, pos.key, bestScore, staticEval == -INF ? 0 : staticEval, bestMove, depth, b, ply);
+        tt_store(tte, pos.key, bestScore, rawEval, bestMove, depth, b, ply);
+        // Teach the correction history when the result says something the evaluation did not
+        if (!inCheck && (!bestMove || !is_tactical(bestMove)) && std::abs(bestScore) < MATE_BOUND &&
+            !(b == BOUND_LOWER && bestScore <= staticEval) && !(b == BOUND_UPPER && bestScore >= staticEval)) {
+            int diff = bestScore - staticEval;
+            update_corr(td->pawnCorr[pos.stm][pos.pawnKey & 16383], diff, depth);
+            if (int16_t* e = cont_corr_entry(td, ply)) update_corr(*e, diff, depth);
+        }
     }
     return bestScore;
 }
