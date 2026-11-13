@@ -61,4 +61,4 @@ Extra commands: `bench [depth]`, `eval`, `d`, `go perft N`, and the command-line
 
 GPL-3.0. See [LICENSE](LICENSE).
 
-Written by curko & Claude.
+Written by nyvexis.
